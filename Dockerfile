@@ -1,16 +1,19 @@
-FROM python:3.12-slim
+FROM python:3.13-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
 # Install dependencies first for better caching
-COPY pyproject.toml .
-RUN pip install --no-cache-dir .
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy operator source
 COPY operator.py .
+RUN uv sync --frozen --no-dev
 
 # Run as non-root
 RUN useradd --create-home --shell /bin/bash operator
 USER operator
 
-ENTRYPOINT ["kopf", "run", "/app/operator.py", "--all-namespaces", "--verbose"]
+ENTRYPOINT ["uv", "run", "kopf", "run", "/app/operator.py", "--all-namespaces", "--verbose"]
