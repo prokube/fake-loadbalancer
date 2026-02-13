@@ -1,0 +1,35 @@
+name: Helm package main and push to ghcr.io
+
+on:
+  push:
+   branches: ["main"]
+   paths:
+      - "helm/**"
+
+jobs:
+  package-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Package the Helm chart and push to Artifact Registry
+      run: |
+        set -euo pipefail
+
+        # Helm packages the chart as {chart-name}-{version}.tgz
+        helm package helm --destination ./helm/dist
+
+        # A wildcard is used to match the versioned chart file
+        # helm push automatically tags the chart with the version from Chart.yaml
+        helm push ./helm/dist/bare-service-lb-*.tgz oci://ghcr.io/prokube/helm
