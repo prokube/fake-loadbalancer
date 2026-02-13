@@ -288,7 +288,3 @@ Apache License 2.0
 Contributions welcome! This project follows a Kubernetes operator pattern using [Kopf](https://kopf.readthedocs.io/).
 
 **Note:** This is a new project (2025). While inspired by battle-tested solutions like k3s ServiceLB, we recommend thorough testing before production use.
-
-## History
-
-Previously known as `nginx-lb-operator`. Renamed to `bare-service-lb` in 2025 to better reflect its relationship to k3s ServiceLB and clarify that it provides "ServiceLB" functionality for any Kubernetes cluster, not just bare-metal.
