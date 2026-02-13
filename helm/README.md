@@ -38,7 +38,7 @@ The following table lists the configurable parameters of the bare-service-lb cha
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `replicaCount` | Number of operator replicas (can be increased for HA with leader election) | `1` |
+| `replicaCount` | Number of operator replicas (2 for HA with leader election) | `1` |
 | `image.repository` | Operator image repository | `ghcr.io/prokube/bare-service-lb` |
 | `image.pullPolicy` | Image pull policy | `Always` |
 | `image.tag` | Overrides the image tag | `""` (uses Chart.appVersion) |
@@ -60,13 +60,11 @@ The following table lists the configurable parameters of the bare-service-lb cha
 | `nodeSelector` | Node selector | `{}` |
 | `tolerations` | Tolerations | `[]` |
 | `affinity` | Affinity rules | `{}` |
-| `env` | Environment variables (includes `LEADER_ELECTION_LEASE_NAME`) | See values.yaml |
+| `env` | Environment variables | See values.yaml |
 
 ## High Availability
 
-The operator supports running with **multiple replicas** for high availability:
-- By default, the operator runs with 1 replica
-- Set `replicaCount: 2` (or higher) to enable high availability
+The operator runs with **1 replica** by default. However, 2+ replica can be set for HA:
 - When running with multiple replicas, only one replica is active (leader) at any time
 - Leader election is managed automatically using Kopf's built-in peering
 - If the leader fails, another replica takes over within seconds

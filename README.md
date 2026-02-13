@@ -68,15 +68,20 @@ For MicroK8s, import the image directly:
 docker save bare-service-lb:latest | microk8s ctr image import -
 ```
 
-### 2. Deploy RBAC and operator
+### 2. Deploy using Helm
 
 ```bash
-kubectl apply -f manifests/rbac.yaml
-kubectl apply -f manifests/peering.yaml  # Leader election CRD and peering object
-kubectl apply -f manifests/deployment.yaml
+helm install bare-service-lb ./helm --namespace bare-service-lb --create-namespace
 ```
 
-The operator runs with 1 replica by default. For high availability, you can scale it to multiple replicas.
+The operator runs with 1 replica by default. For high availability, set `replicaCount: 2`:
+
+```bash
+helm install bare-service-lb ./helm \
+  --namespace bare-service-lb \
+  --create-namespace \
+  --set replicaCount=2
+```
 
 ### 3. Verify the operator is running
 
@@ -84,12 +89,7 @@ The operator runs with 1 replica by default. For high availability, you can scal
 kubectl -n bare-service-lb get pods
 ```
 
-For high availability, scale to 2 replicas:
-```bash
-kubectl -n bare-service-lb scale deployment bare-service-lb --replicas=2
-```
-
-To check which pod is the leader (when running multiple replicas):
+If HA deployment, to check which pod is the leader:
 ```bash
 kubectl get clusterkopfpeering bare-service-lb-leader -o yaml
 # Look at the status field for the current leader
@@ -167,16 +167,14 @@ When you delete the Service, the operator automatically deletes the associated D
 
 | Component | Namespace | Purpose |
 |-----------|-----------|---------|
-| Operator Deployment | `bare-service-lb` | Watches services, manages lifecycle (supports HA via leader election) |
+| Operator Deployment | `bare-service-lb` | Watches services, manages lifecycle |
 | NGINX DaemonSet (per service) | `bare-service-lb` | Runs on every node with `hostPort` |
 | ConfigMap (per service) | `bare-service-lb` | Holds NGINX `stream {}` config |
 | ClusterKopfPeering | cluster-wide | Coordinates leader election between operator replicas |
 
 ### High Availability
 
-The operator supports running with **multiple replicas** for high availability:
-- By default, the operator runs with 1 replica
-- You can scale to multiple replicas (e.g., 2) for high availability
+Set replicas 2+ for high availability:
 - When running with multiple replicas, only one is active (leader) at any time, processing Kubernetes events
 - If the leader fails, another replica automatically takes over within seconds
 - Rolling updates provide zero-downtime upgrades
@@ -294,9 +292,10 @@ This project stands on the shoulders of giants:
 ├── lb_operator.py            # Operator logic (Kopf handlers, 706 lines)
 ├── pyproject.toml            # Python project config
 ├── Dockerfile                # Multi-stage build with uv
-├── manifests/
-│   ├── rbac.yaml             # Namespace, ServiceAccount, ClusterRole, Binding
-│   └── deployment.yaml       # Operator Deployment
+├── helm/
+│   ├── templates/            # Helm chart templates (RBAC, Deployment, Peering)
+│   ├── Chart.yaml            # Helm chart metadata
+│   └── values.yaml           # Default Helm values
 ├── examples/
 │   └── sample-service.yaml   # Example LoadBalancer Service
 └── gcp-external-ip-annotator/
@@ -306,7 +305,7 @@ This project stands on the shoulders of giants:
 ## Roadmap
 
 - [ ] iptables/nftables backend for better performance (maintain NGINX as default for observability)
-- [ ] Helm chart for easier installation
+- [x] Helm chart for easier installation
 - [ ] Node pool support (label-based node selection like k3s ServiceLB)
 - [ ] Tunnel Custom Resource for IPVS compatibility
 - [ ] Prometheus metrics exporter
