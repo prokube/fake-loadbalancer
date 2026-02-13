@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import textwrap
 from typing import Any
 
@@ -52,6 +53,14 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage(
         prefix="bare-service-lb.prokube.ai",
     )
+
+    # Enable leader election for high availability
+    # Multiple operator replicas can run, but only one will be active
+    settings.peering.standalone = False
+    settings.peering.name = os.environ.get(
+        "LEADER_ELECTION_LEASE_NAME", "bare-service-lb-leader"
+    )
+    settings.peering.mandatory = True
 
 
 # ---------------------------------------------------------------------------

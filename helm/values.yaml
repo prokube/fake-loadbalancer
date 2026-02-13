@@ -1,7 +1,7 @@
 # Default values for bare-service-lb operator
 
-# Number of operator replicas (should be 1 for proper leader election)
-replicaCount: 1
+# Number of operator replicas (2 for high availability with leader election)
+replicaCount: 2
 
 image:
   repository: ghcr.io/prokube/bare-service-lb
@@ -82,3 +82,5 @@ affinity: {}
 env:
   - name: PYTHONUNBUFFERED
     value: "1"
+  - name: LEADER_ELECTION_LEASE_NAME
+    value: "bare-service-lb-leader"
