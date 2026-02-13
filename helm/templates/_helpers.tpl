@@ -60,3 +60,16 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Get the leader election lease name from environment variables
+*/}}
+{{- define "bare-service-lb.leaderElectionLeaseName" -}}
+{{- $leaseName := "bare-service-lb-leader" -}}
+{{- range .Values.env }}
+{{- if eq .name "LEADER_ELECTION_LEASE_NAME" }}
+{{- $leaseName = .value }}
+{{- end }}
+{{- end }}
+{{- $leaseName }}
+{{- end }}
