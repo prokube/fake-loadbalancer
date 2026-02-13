@@ -31,6 +31,7 @@ OPERATOR_LABEL = "nginx-lb-operator.prokube.ai/managed"
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 FINALIZER = "nginx-lb-operator.prokube.ai/cleanup"
 EXTERNAL_IP_ANNOTATION = "nginx-lb-operator.prokube.ai/external-ip"
+RECONCILED_ANNOTATION = "nginx-lb-operator.prokube.ai/reconciled"
 NGINX_IMAGE = "nginx:1.27-alpine"
 DAEMONSET_PREFIX = "nginx-lb-"
 CONFIGMAP_PREFIX = "nginx-lb-cfg-"
@@ -403,11 +404,15 @@ async def handle_loadbalancer(
       3. Deploy ConfigMap + DaemonSet
       4. Patch status with node IPs
     """
-    # Skip services already managed by the operator to avoid re-processing loops
+    # Skip services that have already been fully reconciled to avoid
+    # re-processing loops.  The "managed" annotation is set early (ownership
+    # claim), but "reconciled" is only set after all resources have been
+    # created successfully.  This means a failed handler run will retry on
+    # the next event/restart because "reconciled" won't be present yet.
     annotations = meta.get("annotations", {})
-    if annotations.get("nginx-lb-operator.prokube.ai/managed") == "true":
-        logger.debug("Skipping already-managed service %s/%s", namespace, name)
-        return {"managed": False}
+    if annotations.get(RECONCILED_ANNOTATION) == "true":
+        logger.debug("Skipping already-reconciled service %s/%s", namespace, name)
+        return {"managed": True, "reconciled": True}
 
     logger.info("Processing LoadBalancer service %s/%s", namespace, name)
 
@@ -415,20 +420,24 @@ async def handle_loadbalancer(
     apps_v1 = k8s.AppsV1Api()
 
     # ------------------------------------------------------------------
-    # 1. Read current service and mark it as managed
+    # 1. Mark the service as managed (ownership claim)
     # ------------------------------------------------------------------
     # Keep the service as LoadBalancer — Kubernetes auto-assigns NodePorts
     # for LoadBalancer services, and this allows us to patch
     # status.loadBalancer.ingress (forbidden on NodePort services in K8s 1.24+).
-    patch_body: dict[str, Any] = {
-        "metadata": {
-            "annotations": {
-                "nginx-lb-operator.prokube.ai/managed": "true",
+    # The "managed" annotation is set early so other controllers know we
+    # own this service, but it does NOT prevent retries — only "reconciled"
+    # (set at the very end) prevents re-processing.
+    if annotations.get("nginx-lb-operator.prokube.ai/managed") != "true":
+        patch_body: dict[str, Any] = {
+            "metadata": {
+                "annotations": {
+                    "nginx-lb-operator.prokube.ai/managed": "true",
+                },
             },
-        },
-    }
-    v1.patch_namespaced_service(name, namespace, patch_body)
-    logger.info("Marked %s/%s as managed", namespace, name)
+        }
+        v1.patch_namespaced_service(name, namespace, patch_body)
+        logger.info("Marked %s/%s as managed", namespace, name)
 
     # Read the service to get auto-assigned NodePorts
     svc = v1.read_namespaced_service(name, namespace)
@@ -510,6 +519,19 @@ async def handle_loadbalancer(
     ready_ips = _get_ready_node_ips(ds_name)
     _patch_service_status(namespace, name, ready_ips)
 
+    # ------------------------------------------------------------------
+    # 7. Mark the service as fully reconciled
+    # ------------------------------------------------------------------
+    # This annotation gates the skip-check at the top of this handler.
+    # It is set LAST so that if any step above fails, the operator will
+    # retry on the next event/restart instead of silently skipping.
+    v1.patch_namespaced_service(
+        name,
+        namespace,
+        {"metadata": {"annotations": {RECONCILED_ANNOTATION: "true"}}},
+    )
+    logger.info("Marked %s/%s as reconciled", namespace, name)
+
     return {
         "managed": True,
         "daemonset": f"{NAMESPACE}/{ds_name}",
@@ -528,7 +550,9 @@ async def handle_delete(
 ) -> None:
     """Clean up DaemonSet and ConfigMap when the service is deleted."""
     annotations = meta.get("annotations", {})
-    if annotations.get("nginx-lb-operator.prokube.ai/managed") != "true":
+    is_managed = annotations.get("nginx-lb-operator.prokube.ai/managed") == "true"
+    is_reconciled = annotations.get(RECONCILED_ANNOTATION) == "true"
+    if not (is_managed or is_reconciled):
         return
 
     logger.info("Cleaning up resources for deleted service %s/%s", namespace, name)
@@ -578,7 +602,9 @@ def _refresh_all_managed_statuses() -> None:
     all_services = v1.list_service_for_all_namespaces()
     for svc in all_services.items:
         annotations = svc.metadata.annotations or {}
-        if annotations.get("nginx-lb-operator.prokube.ai/managed") != "true":
+        is_managed = annotations.get("nginx-lb-operator.prokube.ai/managed") == "true"
+        is_reconciled = annotations.get(RECONCILED_ANNOTATION) == "true"
+        if not (is_managed or is_reconciled):
             continue
         svc_ns = svc.metadata.namespace
         svc_name = svc.metadata.name
