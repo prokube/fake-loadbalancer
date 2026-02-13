@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/name: bare-service-lb
     app.kubernetes.io/component: operator
 spec:
-  replicas: 2
+  replicas: 1
   strategy:
     type: RollingUpdate  # Multiple replicas supported with leader election
     rollingUpdate:

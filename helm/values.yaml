@@ -1,7 +1,7 @@
 # Default values for bare-service-lb operator
 
-# Number of operator replicas (2 for high availability with leader election)
-replicaCount: 2
+# Number of operator replicas (can be increased for HA with leader election)
+replicaCount: 1
 
 image:
   repository: ghcr.io/prokube/bare-service-lb

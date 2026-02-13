@@ -38,7 +38,7 @@ The following table lists the configurable parameters of the bare-service-lb cha
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `replicaCount` | Number of operator replicas (2 for HA with leader election) | `2` |
+| `replicaCount` | Number of operator replicas (can be increased for HA with leader election) | `1` |
 | `image.repository` | Operator image repository | `ghcr.io/prokube/bare-service-lb` |
 | `image.pullPolicy` | Image pull policy | `Always` |
 | `image.tag` | Overrides the image tag | `""` (uses Chart.appVersion) |
@@ -64,8 +64,10 @@ The following table lists the configurable parameters of the bare-service-lb cha
 
 ## High Availability
 
-The operator runs with **2 replicas** by default for high availability:
-- Only one replica is active (leader) at any time
+The operator supports running with **multiple replicas** for high availability:
+- By default, the operator runs with 1 replica
+- Set `replicaCount: 2` (or higher) to enable high availability
+- When running with multiple replicas, only one replica is active (leader) at any time
 - Leader election is managed automatically using Kopf's built-in peering
 - If the leader fails, another replica takes over within seconds
 - Rolling updates provide zero-downtime upgrades
@@ -77,8 +79,8 @@ The chart automatically creates a `ClusterKopfPeering` resource for leader elect
 Create a `custom-values.yaml` file:
 
 ```yaml
-# Run with a single replica if HA is not needed
-replicaCount: 1
+# Enable high availability with 2 replicas
+replicaCount: 2
 
 image:
   tag: "latest"
