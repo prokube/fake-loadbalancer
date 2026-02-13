@@ -2,13 +2,13 @@
 nginx-lb-operator: Converts LoadBalancer Services to hostPort-based NGINX TCP proxies.
 
 Flow:
-  1. User creates Service type=LoadBalancer (port 80)
-  2. Operator patches it to type=NodePort (Kubernetes assigns e.g. 30764)
+  1. User creates Service type=LoadBalancer (port 80, Kubernetes auto-assigns e.g. NodePort 30764)
+  2. Operator marks it as managed (keeps type as LoadBalancer)
   3. Operator creates/updates a ConfigMap with NGINX stream config:
        stream { upstream backend { server 127.0.0.1:30764; } server { listen 80; proxy_pass backend; } }
   4. Operator creates/updates a DaemonSet running NGINX with hostPort on the original port
   5. Operator patches Service .status.loadBalancer.ingress with node IPs
-  6. On delete, operator tears down the DaemonSet + ConfigMap and (optionally) reverts the Service
+  6. On delete, operator tears down the DaemonSet + ConfigMap
 """
 
 from __future__ import annotations
@@ -26,10 +26,10 @@ logger = logging.getLogger("nginx-lb-operator")
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-OPERATOR_LABEL = "nginx-lb-operator.io/managed"
+OPERATOR_LABEL = "nginx-lb-operator.prokube.ai/managed"
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
-SERVICE_ANNOTATION = "nginx-lb-operator.io/original-type"
-FINALIZER = "nginx-lb-operator.io/cleanup"
+FINALIZER = "nginx-lb-operator.prokube.ai/cleanup"
+EXTERNAL_IP_ANNOTATION = "nginx-lb-operator.prokube.ai/external-ip"
 NGINX_IMAGE = "nginx:1.27-alpine"
 DAEMONSET_PREFIX = "nginx-lb-"
 CONFIGMAP_PREFIX = "nginx-lb-cfg-"
@@ -46,7 +46,7 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     settings.posting.level = logging.WARNING
     settings.persistence.finalizer = FINALIZER
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage(
-        prefix="nginx-lb-operator.io",
+        prefix="nginx-lb-operator.prokube.ai",
     )
 
 
@@ -117,11 +117,11 @@ def _build_configmap(
             labels={
                 OPERATOR_LABEL: "true",
                 MANAGED_BY_LABEL: "nginx-lb-operator",
-                "nginx-lb-operator.io/service-namespace": svc_namespace,
-                "nginx-lb-operator.io/service-name": svc_name,
+                "nginx-lb-operator.prokube.ai/service-namespace": svc_namespace,
+                "nginx-lb-operator.prokube.ai/service-name": svc_name,
             },
             annotations={
-                "nginx-lb-operator.io/owner-uid": owner_uid,
+                "nginx-lb-operator.prokube.ai/owner-uid": owner_uid,
             },
         ),
         data={
@@ -159,23 +159,23 @@ def _build_daemonset(
             labels={
                 OPERATOR_LABEL: "true",
                 MANAGED_BY_LABEL: "nginx-lb-operator",
-                "nginx-lb-operator.io/service-namespace": svc_namespace,
-                "nginx-lb-operator.io/service-name": svc_name,
+                "nginx-lb-operator.prokube.ai/service-namespace": svc_namespace,
+                "nginx-lb-operator.prokube.ai/service-name": svc_name,
             },
             annotations={
-                "nginx-lb-operator.io/owner-uid": owner_uid,
+                "nginx-lb-operator.prokube.ai/owner-uid": owner_uid,
             },
         ),
         spec=k8s.V1DaemonSetSpec(
             selector=k8s.V1LabelSelector(
                 match_labels={
-                    "nginx-lb-operator.io/daemonset": ds_name,
+                    "nginx-lb-operator.prokube.ai/daemonset": ds_name,
                 },
             ),
             template=k8s.V1PodTemplateSpec(
                 metadata=k8s.V1ObjectMeta(
                     labels={
-                        "nginx-lb-operator.io/daemonset": ds_name,
+                        "nginx-lb-operator.prokube.ai/daemonset": ds_name,
                         OPERATOR_LABEL: "true",
                     },
                 ),
@@ -254,16 +254,37 @@ def _build_daemonset(
 
 
 def _get_node_ips() -> list[str]:
-    """Return list of InternalIP addresses for all Ready nodes."""
+    """Return the best available IP address for each node.
+
+    Resolution order per node:
+      1. ``nginx-lb-operator.prokube.ai/external-ip`` annotation (user/tool provided)
+      2. ``ExternalIP`` from node status addresses
+      3. ``InternalIP`` from node status addresses
+    """
     v1 = k8s.CoreV1Api()
     nodes = v1.list_node()
     ips: list[str] = []
     for node in nodes.items:
-        if node.status and node.status.addresses:
-            for addr in node.status.addresses:
-                if addr.type == "InternalIP":
-                    ips.append(addr.address)
-                    break
+        # 1. Check for operator annotation (set by external tooling)
+        annotations = (node.metadata.annotations or {}) if node.metadata else {}
+        annotated_ip = annotations.get(EXTERNAL_IP_ANNOTATION)
+        if annotated_ip:
+            ips.append(annotated_ip)
+            continue
+
+        # 2. Fall back to node status addresses
+        if not (node.status and node.status.addresses):
+            continue
+        external = None
+        internal = None
+        for addr in node.status.addresses:
+            if addr.type == "ExternalIP":
+                external = addr.address
+            elif addr.type == "InternalIP":
+                internal = addr.address
+        ip = external or internal
+        if ip:
+            ips.append(ip)
     return sorted(ips)
 
 
@@ -314,19 +335,16 @@ async def handle_loadbalancer(
 ) -> dict[str, Any]:
     """
     React to a Service of type LoadBalancer:
-      1. Patch it to NodePort
+      1. Mark it as managed (keep type as LoadBalancer so status.loadBalancer.ingress is allowed)
       2. Build NGINX config
       3. Deploy ConfigMap + DaemonSet
       4. Patch status with node IPs
     """
-    # Skip services we didn't create or that are already managed
-    if meta.get("labels", {}).get(OPERATOR_LABEL) == "true":
+    # Skip services already managed by the operator to avoid re-processing loops
+    annotations = meta.get("annotations", {})
+    if annotations.get("nginx-lb-operator.prokube.ai/managed") == "true":
         logger.debug("Skipping already-managed service %s/%s", namespace, name)
         return {"managed": False}
-
-    # Skip if the service has an annotation saying the operator already processed it
-    # (the update handler would re-fire after we patch type to NodePort, but the field
-    # filter above prevents that because spec.type will no longer be LoadBalancer)
 
     logger.info("Processing LoadBalancer service %s/%s", namespace, name)
 
@@ -334,29 +352,22 @@ async def handle_loadbalancer(
     apps_v1 = k8s.AppsV1Api()
 
     # ------------------------------------------------------------------
-    # 1. Read current service to get the latest resourceVersion
+    # 1. Read current service and mark it as managed
     # ------------------------------------------------------------------
-    svc = v1.read_namespaced_service(name, namespace)
-    svc_ports = svc.spec.ports
-
-    # ------------------------------------------------------------------
-    # 2. Patch service to NodePort and annotate it
-    # ------------------------------------------------------------------
+    # Keep the service as LoadBalancer — Kubernetes auto-assigns NodePorts
+    # for LoadBalancer services, and this allows us to patch
+    # status.loadBalancer.ingress (forbidden on NodePort services in K8s 1.24+).
     patch_body: dict[str, Any] = {
         "metadata": {
             "annotations": {
-                SERVICE_ANNOTATION: "LoadBalancer",
-                "nginx-lb-operator.io/managed": "true",
+                "nginx-lb-operator.prokube.ai/managed": "true",
             },
-        },
-        "spec": {
-            "type": "NodePort",
         },
     }
     v1.patch_namespaced_service(name, namespace, patch_body)
-    logger.info("Patched %s/%s to NodePort", namespace, name)
+    logger.info("Marked %s/%s as managed", namespace, name)
 
-    # Re-read to get assigned NodePorts
+    # Read the service to get auto-assigned NodePorts
     svc = v1.read_namespaced_service(name, namespace)
     svc_ports = svc.spec.ports
 
@@ -450,7 +461,7 @@ async def handle_delete(
 ) -> None:
     """Clean up DaemonSet and ConfigMap when the service is deleted."""
     annotations = meta.get("annotations", {})
-    if annotations.get("nginx-lb-operator.io/managed") != "true":
+    if annotations.get("nginx-lb-operator.prokube.ai/managed") != "true":
         return
 
     logger.info("Cleaning up resources for deleted service %s/%s", namespace, name)
@@ -500,7 +511,7 @@ async def handle_node_change(**_: Any) -> None:
     all_services = v1.list_service_for_all_namespaces()
     for svc in all_services.items:
         annotations = svc.metadata.annotations or {}
-        if annotations.get("nginx-lb-operator.io/managed") == "true":
+        if annotations.get("nginx-lb-operator.prokube.ai/managed") == "true":
             try:
                 _patch_service_status(
                     svc.metadata.namespace,

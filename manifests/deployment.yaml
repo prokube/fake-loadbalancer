@@ -26,7 +26,7 @@ spec:
       containers:
         - name: operator
           image: europe-west3-docker.pkg.dev/prokube-internal/prokube-dev/nginx-load-balancer:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           resources:
             requests:
               cpu: 50m

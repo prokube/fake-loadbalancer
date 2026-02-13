@@ -16,4 +16,4 @@ RUN uv sync --frozen --no-dev
 RUN groupadd --system appuser && useradd --system --gid appuser --create-home appuser
 USER appuser
 
-ENTRYPOINT ["uv", "run", "/app/lb_operator.py", "--all-namespaces", "--verbose"]
+ENTRYPOINT ["uv", "run", "kopf", "run", "/app/lb_operator.py", "--all-namespaces", "--verbose", "--liveness=http://0.0.0.0:8080/healthz"]
