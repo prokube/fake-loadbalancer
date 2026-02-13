@@ -40,6 +40,10 @@ rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Kopf peering for leader election (ClusterKopfPeering CRD)
+  - apiGroups: ["kopf.dev"]
+    resources: ["clusterkopfpeerings"]
+    verbs: ["get", "list", "watch", "patch"]
   # Kopf scans CRDs at startup to discover custom resources
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
