@@ -72,13 +72,23 @@ docker save bare-service-lb:latest | microk8s ctr image import -
 
 ```bash
 kubectl apply -f manifests/rbac.yaml
+kubectl apply -f manifests/peering.yaml  # Leader election CRD and peering object
 kubectl apply -f manifests/deployment.yaml
 ```
+
+The operator runs with 2 replicas for high availability. Only one replica will be active at a time (leader), and the other will be on standby.
 
 ### 3. Verify the operator is running
 
 ```bash
 kubectl -n bare-service-lb get pods
+# You should see 2 pods running
+```
+
+To check which pod is the leader:
+```bash
+kubectl get clusterkopfpeering bare-service-lb-leader -o yaml
+# Look at the status field for the current leader
 ```
 
 ## Usage
@@ -153,9 +163,18 @@ When you delete the Service, the operator automatically deletes the associated D
 
 | Component | Namespace | Purpose |
 |-----------|-----------|---------|
-| Operator Deployment | `bare-service-lb` | Watches services, manages lifecycle |
+| Operator Deployment | `bare-service-lb` | Watches services, manages lifecycle (runs with 2 replicas for HA) |
 | NGINX DaemonSet (per service) | `bare-service-lb` | Runs on every node with `hostPort` |
 | ConfigMap (per service) | `bare-service-lb` | Holds NGINX `stream {}` config |
+| ClusterKopfPeering | cluster-wide | Coordinates leader election between operator replicas |
+
+### High Availability
+
+The operator runs with **2 replicas** by default for high availability:
+- Only one replica is active (leader) at any time, processing Kubernetes events
+- If the leader fails, another replica automatically takes over within seconds
+- Rolling updates provide zero-downtime upgrades
+- Leader election is managed by Kopf using Kubernetes Lease objects
 
 ### RBAC Permissions
 
@@ -168,6 +187,7 @@ When you delete the Service, the operator automatically deletes the associated D
 | ConfigMaps | full CRUD | Manage NGINX configs |
 | Events | create, patch | Kopf event posting |
 | Leases | full CRUD | Kopf leader election |
+| ClusterKopfPeering | full CRUD | Operator peering for HA |
 
 ## Honest Comparison with Alternatives
 
