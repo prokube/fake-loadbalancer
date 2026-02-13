@@ -20,12 +20,10 @@ spec:
         app.kubernetes.io/name: bare-service-lb
         app.kubernetes.io/component: operator
     spec:
-      imagePullSecrets:
-        - name: regcred-prokube-dev
       serviceAccountName: bare-service-lb
       containers:
         - name: operator
-          image: europe-west3-docker.pkg.dev/prokube-internal/prokube-dev/bare-service-lb:latest
+          image: ghcr.io/prokube/bare-service-lb:latest
           imagePullPolicy: Always
           resources:
             requests:
