@@ -1,7 +1,7 @@
 [project]
-name = "nginx-lb-operator"
+name = "bare-service-lb"
 version = "0.1.0"
-description = "Kubernetes operator that converts LoadBalancer Services to hostPort-based NGINX TCP proxies"
+description = "ServiceLB for bare-metal, cloud VMs, and anywhere without a cloud LoadBalancer. Inspired by k3s ServiceLB."
 requires-python = ">=3.11"
 dependencies = [
     "kopf>=1.37,<2",

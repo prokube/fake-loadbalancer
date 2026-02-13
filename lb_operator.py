@@ -1,5 +1,8 @@
 """
-nginx-lb-operator: Converts LoadBalancer Services to hostPort-based NGINX TCP proxies.
+bare-service-lb: ServiceLB for bare-metal, cloud VMs, and anywhere without a cloud LoadBalancer.
+
+Inspired by k3s ServiceLB, this operator brings zero-configuration LoadBalancer services
+to any Kubernetes distribution with better observability through NGINX.
 
 Flow:
   1. User creates Service type=LoadBalancer (port 80, Kubernetes auto-assigns e.g. NodePort 30764)
@@ -22,20 +25,20 @@ import kopf
 import kubernetes
 from kubernetes import client as k8s
 
-logger = logging.getLogger("nginx-lb-operator")
+logger = logging.getLogger("bare-service-lb")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-OPERATOR_LABEL = "nginx-lb-operator.prokube.ai/managed"
+OPERATOR_LABEL = "bare-service-lb.prokube.ai/managed"
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
-FINALIZER = "nginx-lb-operator.prokube.ai/cleanup"
-EXTERNAL_IP_ANNOTATION = "nginx-lb-operator.prokube.ai/external-ip"
-RECONCILED_ANNOTATION = "nginx-lb-operator.prokube.ai/reconciled"
+FINALIZER = "bare-service-lb.prokube.ai/cleanup"
+EXTERNAL_IP_ANNOTATION = "bare-service-lb.prokube.ai/external-ip"
+RECONCILED_ANNOTATION = "bare-service-lb.prokube.ai/reconciled"
 NGINX_IMAGE = "nginx:1.27-alpine"
-DAEMONSET_PREFIX = "nginx-lb-"
-CONFIGMAP_PREFIX = "nginx-lb-cfg-"
-NAMESPACE = "nginx-lb-operator"  # namespace where DaemonSets/ConfigMaps live
+DAEMONSET_PREFIX = "bsl-"
+CONFIGMAP_PREFIX = "bsl-cfg-"
+NAMESPACE = "bare-service-lb"  # namespace where DaemonSets/ConfigMaps live
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
@@ -47,7 +50,7 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     settings.posting.level = logging.WARNING
     settings.persistence.finalizer = FINALIZER
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage(
-        prefix="nginx-lb-operator.prokube.ai",
+        prefix="bare-service-lb.prokube.ai",
     )
 
 
@@ -142,12 +145,12 @@ def _build_configmap(
             namespace=NAMESPACE,
             labels={
                 OPERATOR_LABEL: "true",
-                MANAGED_BY_LABEL: "nginx-lb-operator",
-                "nginx-lb-operator.prokube.ai/service-namespace": svc_namespace,
-                "nginx-lb-operator.prokube.ai/service-name": svc_name,
+                MANAGED_BY_LABEL: "bare-service-lb",
+                "bare-service-lb.prokube.ai/service-namespace": svc_namespace,
+                "bare-service-lb.prokube.ai/service-name": svc_name,
             },
             annotations={
-                "nginx-lb-operator.prokube.ai/owner-uid": owner_uid,
+                "bare-service-lb.prokube.ai/owner-uid": owner_uid,
             },
         ),
         data={
@@ -184,24 +187,24 @@ def _build_daemonset(
             namespace=NAMESPACE,
             labels={
                 OPERATOR_LABEL: "true",
-                MANAGED_BY_LABEL: "nginx-lb-operator",
-                "nginx-lb-operator.prokube.ai/service-namespace": svc_namespace,
-                "nginx-lb-operator.prokube.ai/service-name": svc_name,
+                MANAGED_BY_LABEL: "bare-service-lb",
+                "bare-service-lb.prokube.ai/service-namespace": svc_namespace,
+                "bare-service-lb.prokube.ai/service-name": svc_name,
             },
             annotations={
-                "nginx-lb-operator.prokube.ai/owner-uid": owner_uid,
+                "bare-service-lb.prokube.ai/owner-uid": owner_uid,
             },
         ),
         spec=k8s.V1DaemonSetSpec(
             selector=k8s.V1LabelSelector(
                 match_labels={
-                    "nginx-lb-operator.prokube.ai/daemonset": ds_name,
+                    "bare-service-lb.prokube.ai/daemonset": ds_name,
                 },
             ),
             template=k8s.V1PodTemplateSpec(
                 metadata=k8s.V1ObjectMeta(
                     labels={
-                        "nginx-lb-operator.prokube.ai/daemonset": ds_name,
+                        "bare-service-lb.prokube.ai/daemonset": ds_name,
                         OPERATOR_LABEL: "true",
                     },
                 ),
@@ -283,7 +286,7 @@ def _get_node_ip(node: k8s.V1Node) -> str | None:
     """Return the best available IP address for a single node.
 
     Resolution order:
-      1. ``nginx-lb-operator.prokube.ai/external-ip`` annotation (user/tool provided)
+      1. ``bare-service-lb.prokube.ai/external-ip`` annotation (user/tool provided)
       2. ``ExternalIP`` from node status addresses
       3. ``InternalIP`` from node status addresses
     """
@@ -329,7 +332,7 @@ def _get_ready_node_ips(ds_name: str) -> list[str]:
     v1 = k8s.CoreV1Api()
     pods = v1.list_namespaced_pod(
         namespace=NAMESPACE,
-        label_selector=f"nginx-lb-operator.prokube.ai/daemonset={ds_name}",
+        label_selector=f"bare-service-lb.prokube.ai/daemonset={ds_name}",
     )
 
     ready_node_names: set[str] = set()
@@ -379,7 +382,7 @@ def _ensure_namespace() -> None:
                 k8s.V1Namespace(
                     metadata=k8s.V1ObjectMeta(
                         name=NAMESPACE,
-                        labels={MANAGED_BY_LABEL: "nginx-lb-operator"},
+                        labels={MANAGED_BY_LABEL: "bare-service-lb"},
                     )
                 )
             )
@@ -435,11 +438,11 @@ async def handle_loadbalancer(
     # The "managed" annotation is set early so other controllers know we
     # own this service, but it does NOT prevent retries — only "reconciled"
     # (set at the very end) prevents re-processing.
-    if annotations.get("nginx-lb-operator.prokube.ai/managed") != "true":
+    if annotations.get("bare-service-lb.prokube.ai/managed") != "true":
         patch_body: dict[str, Any] = {
             "metadata": {
                 "annotations": {
-                    "nginx-lb-operator.prokube.ai/managed": "true",
+                    "bare-service-lb.prokube.ai/managed": "true",
                 },
             },
         }
@@ -562,7 +565,7 @@ async def handle_loadbalancer(
 
 @kopf.on.delete(
     "services",
-    annotations={"nginx-lb-operator.prokube.ai/managed": "true"},
+    annotations={"bare-service-lb.prokube.ai/managed": "true"},
 )
 async def handle_delete(
     namespace: str,
@@ -572,7 +575,7 @@ async def handle_delete(
 ) -> None:
     """Clean up DaemonSet and ConfigMap when the service is deleted."""
     annotations = meta.get("annotations", {})
-    is_managed = annotations.get("nginx-lb-operator.prokube.ai/managed") == "true"
+    is_managed = annotations.get("bare-service-lb.prokube.ai/managed") == "true"
     is_reconciled = annotations.get(RECONCILED_ANNOTATION) == "true"
     if not (is_managed or is_reconciled):
         return
@@ -624,7 +627,7 @@ def _refresh_all_managed_statuses() -> None:
     all_services = v1.list_service_for_all_namespaces()
     for svc in all_services.items:
         annotations = svc.metadata.annotations or {}
-        is_managed = annotations.get("nginx-lb-operator.prokube.ai/managed") == "true"
+        is_managed = annotations.get("bare-service-lb.prokube.ai/managed") == "true"
         is_reconciled = annotations.get(RECONCILED_ANNOTATION) == "true"
         if not (is_managed or is_reconciled):
             continue
@@ -677,7 +680,7 @@ async def handle_pod_event(
     and patches the Service status with accurate node IPs.
     """
     labels = meta.get("labels", {})
-    ds_label = labels.get("nginx-lb-operator.prokube.ai/daemonset", "")
+    ds_label = labels.get("bare-service-lb.prokube.ai/daemonset", "")
     if not ds_label:
         return
 
@@ -689,8 +692,8 @@ async def handle_pod_event(
         return  # DaemonSet may already be deleted
 
     ds_labels = ds.metadata.labels or {}
-    svc_ns = ds_labels.get("nginx-lb-operator.prokube.ai/service-namespace")
-    svc_name = ds_labels.get("nginx-lb-operator.prokube.ai/service-name")
+    svc_ns = ds_labels.get("bare-service-lb.prokube.ai/service-namespace")
+    svc_name = ds_labels.get("bare-service-lb.prokube.ai/service-name")
     if not svc_ns or not svc_name:
         return
 

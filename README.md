@@ -1,29 +1,34 @@
-# nginx-lb-operator
+# bare-service-lb (bsl)
 
-A Kubernetes operator that provides LoadBalancer services for **MicroK8s, kubeadm, and bare-metal Kubernetes clusters** without requiring network infrastructure changes.
+ServiceLB for bare-metal, cloud VMs, and anywhere without a cloud LoadBalancer.
 
-Unlike MetalLB (requires ARP/BGP), nginx-lb-operator uses NGINX + hostPort for plug-and-play LoadBalancer support with excellent observability.
+Inspired by [k3s ServiceLB](https://github.com/k3s-io/klipper-lb), bare-service-lb brings the same zero-configuration LoadBalancer experience to **any Kubernetes distribution** with better observability and smarter traffic handling.
 
-## Why nginx-lb-operator?
+## Why bare-service-lb?
 
-- **Zero Configuration**: Works on any Kubernetes cluster without network infrastructure changes
-- **Any Distribution**: MicroK8s, kubeadm, K3s, vanilla Kubernetes — all supported
-- **Excellent Observability**: NGINX logs show actual traffic patterns (unlike iptables-based solutions)
+- **Zero Configuration**: No BGP, no ARP, no routing setup required
+- **Works Anywhere**: MicroK8s, kubeadm, K3s, vanilla Kubernetes, cloud VMs
+- **Excellent Observability**: NGINX logs (default) show actual traffic patterns
 - **Smart Traffic Policy**: Handles `externalTrafficPolicy: Local` correctly to prevent endpoint loss
 - **Production Ready**: Sophisticated pod readiness tracking and status management
+- **Implementation Flexible**: Currently uses NGINX proxy, iptables/nftables backends planned
 
-### When to use nginx-lb-operator
+## When to Use What
 
-| Your Situation | Best Solution |
-|----------------|---------------|
-| **Traditional datacenter with BGP routers** | MetalLB (BGP mode) — Real routing protocols |
-| **K3s cluster** | K3s ServiceLB — Built-in, free |
-| **MicroK8s / kubeadm / vanilla K8s** | **nginx-lb-operator** — Only standalone, observable solution |
-| **Need detailed traffic logs** | **nginx-lb-operator** — NGINX access logs |
-| **Behind NAT, no network control** | **nginx-lb-operator** OR inlets-operator |
-| **Development (KIND/minikube)** | cloud-provider-kind — Purpose-built |
+We believe in honest positioning. Here's when to use each solution:
 
-If you have network control (BGP routers, ARP access), use MetalLB. If you need a zero-configuration LoadBalancer that "just works" without network changes, use nginx-lb-operator.
+| Your Situation | Best Solution | Why |
+|----------------|---------------|-----|
+| **Traditional datacenter with BGP routers** | [MetalLB](https://metallb.universe.tf/) (BGP mode) | Real routing protocols, best performance, enterprise-grade |
+| **Have Layer 2 network control (ARP)** | [MetalLB](https://metallb.universe.tf/) (L2 mode) | Standard networking approach, mature solution |
+| **Using K3s exclusively** | [k3s ServiceLB](https://github.com/k3s-io/klipper-lb) | Built-in, zero config, battle-tested |
+| **MicroK8s, kubeadm, vanilla K8s** | **bare-service-lb** | Only standalone ServiceLB implementation |
+| **Need detailed traffic logs/debugging** | **bare-service-lb** | NGINX access logs vs iptables rules |
+| **Cloud VMs (Hetzner, DigitalOcean, etc.)** | **bare-service-lb** | Works without network infrastructure access |
+| **Behind NAT, no network admin access** | **bare-service-lb** | No special network permissions needed |
+| **Home lab / development clusters** | **bare-service-lb** or cloud-provider-kind | Simple setup, good for learning |
+
+**Our positioning:** We're not competing with MetalLB (different architecture, different requirements). We're extending k3s ServiceLB's concept to all Kubernetes distributions with better observability.
 
 ## How It Works
 
@@ -54,13 +59,13 @@ The result: your `LoadBalancer` Service becomes reachable on every node at the o
 ### 1. Build the operator image
 
 ```bash
-docker build -t nginx-lb-operator:latest .
+docker build -t bare-service-lb:latest .
 ```
 
 For MicroK8s, import the image directly:
 
 ```bash
-docker save nginx-lb-operator:latest | microk8s ctr image import -
+docker save bare-service-lb:latest | microk8s ctr image import -
 ```
 
 ### 2. Deploy RBAC and operator
@@ -73,7 +78,7 @@ kubectl apply -f manifests/deployment.yaml
 ### 3. Verify the operator is running
 
 ```bash
-kubectl -n nginx-lb-operator get pods
+kubectl -n bare-service-lb get pods
 ```
 
 ## Usage
@@ -148,9 +153,9 @@ When you delete the Service, the operator automatically deletes the associated D
 
 | Component | Namespace | Purpose |
 |-----------|-----------|---------|
-| Operator Deployment | `nginx-lb-operator` | Watches services, manages lifecycle |
-| NGINX DaemonSet (per service) | `nginx-lb-operator` | Runs on every node with `hostPort` |
-| ConfigMap (per service) | `nginx-lb-operator` | Holds NGINX `stream {}` config |
+| Operator Deployment | `bare-service-lb` | Watches services, manages lifecycle |
+| NGINX DaemonSet (per service) | `bare-service-lb` | Runs on every node with `hostPort` |
+| ConfigMap (per service) | `bare-service-lb` | Holds NGINX `stream {}` config |
 
 ### RBAC Permissions
 
@@ -164,47 +169,61 @@ When you delete the Service, the operator automatically deletes the associated D
 | Events | create, patch | Kopf event posting |
 | Leases | full CRUD | Kopf leader election |
 
-## Comparison with Alternatives
+## Honest Comparison with Alternatives
 
-| Feature | nginx-lb-operator | k3s ServiceLB | MetalLB | inlets-operator |
-|---------|-------------------|---------------|---------|-----------------|
+We believe in transparency. Here's how bare-service-lb compares to other solutions:
+
+| Feature | bare-service-lb | k3s ServiceLB | MetalLB | inlets-operator |
+|---------|-----------------|---------------|---------|-----------------|
 | **Any K8s Distribution** | ✅ Yes | ❌ K3s only | ✅ Yes | ✅ Yes |
 | **Network Control Needed** | ❌ No | ❌ No | ⚠️ ARP/BGP required | ❌ No |
 | **Observability** | ✅ Excellent (NGINX logs) | 🟡 Basic (iptables) | 🟡 Basic | ✅ Good |
-| **externalTrafficPolicy=Local** | ✅ Full support | ⚠️ Known issues | ✅ Full support | ✅ Full support |
+| **externalTrafficPolicy=Local** | ✅ Full support | ⚠️ Known issues ([NAT+Local](https://docs.k3s.io/networking/networking-services#known-issue)) | ✅ Full support | ✅ Full support |
 | **Performance** | 🟡 Good (userspace proxy) | 🟢 Better (kernel NAT) | 🟢 Best (routing) | 🟡 Good (tunnel) |
-| **Resource Overhead** | 🟡 Moderate (NGINX) | 🟢 Low (iptables) | 🟢 Low | 🟡 Moderate |
+| **Resource Overhead** | 🟡 Moderate (NGINX pods) | 🟢 Low (iptables) | 🟢 Low (no proxies) | 🟡 Moderate |
 | **Cost** | 🟢 Free | 🟢 Free | 🟢 Free | 🟡 ~$5/mo per LB |
-| **Implementation** | Application proxy | Kernel NAT | Routing protocols | Cloud tunnel |
+| **Maturity** | 🆕 New project | ✅ Battle-tested | ✅ CNCF Sandbox | ✅ Commercial |
+| **Implementation** | NGINX proxy | iptables NAT | ARP/BGP routing | Cloud tunnel |
 
 ### Architectural Differences
 
-**nginx-lb-operator** (this project):
+**bare-service-lb** (this project):
 ```
-User → Node:80 (hostPort) → NGINX → 127.0.0.1:30764 (NodePort) → Service → Pods
+User → Node:80 (hostPort) → NGINX proxy → 127.0.0.1:30764 (NodePort) → Service ClusterIP → Pods
+                                                    ↓
+                                          kube-proxy does load balancing
 ```
 
 **k3s ServiceLB** (iptables-based):
 ```
 User → Node:80 (hostPort) → iptables DNAT → Service ClusterIP → Pods
+                                    ↓
+                          kube-proxy does load balancing
 ```
 
 **MetalLB** (Layer 2 mode):
 ```
 User → Floating IP (ARP announcement) → kube-proxy → Service ClusterIP → Pods
+              ↓                                ↓
+    One node "owns" IP               kube-proxy does load balancing
 ```
 
 **MetalLB** (BGP mode):
 ```
-User → Routed IP (BGP advertisement) → kube-proxy → Service ClusterIP → Pods
+User → Routed IP (BGP advertisement to routers) → kube-proxy → Service ClusterIP → Pods
+              ↓                                         ↓
+    All nodes advertise route                 kube-proxy does load balancing
 ```
+
+**Key Insight:** None of these solutions actually "load balance" - they all just provide external access. kube-proxy handles the actual traffic distribution to pods.
 
 ## Limitations
 
 - **Port Conflicts**: Two services cannot claim the same `hostPort` — the second DaemonSet's pods will fail to schedule and the Service will show no `EXTERNAL-IP` (the operator only reports IPs for nodes where pods are actually Ready)
-- **Performance**: Additional userspace hop through NGINX (vs kernel-level NAT in k3s ServiceLB or routing in MetalLB)
-- **Single Namespace**: The operator uses a single namespace (`nginx-lb-operator`) for all managed resources
+- **Performance**: Additional userspace hop through NGINX (vs kernel-level NAT in k3s ServiceLB or routing in MetalLB). This is the trade-off for better observability.
+- **Single Namespace**: The operator uses a single namespace (`bare-service-lb`) for all managed resources
 - **No Node Pools**: Unlike k3s ServiceLB, there's no built-in label-based node selection (use standard K8s node selectors/affinity instead)
+- **Maturity**: New project (2025), while alternatives have years of production use. We recommend testing thoroughly in non-production first.
 
 ## Development
 
@@ -223,13 +242,17 @@ This requires a valid kubeconfig pointing at your cluster.
 pytest
 ```
 
-## Related Projects
+## Related Projects & Inspiration
 
-- [MetalLB](https://metallb.universe.tf/) — CNCF Sandbox project, requires network control (ARP/BGP)
-- [k3s ServiceLB (klipper-lb)](https://github.com/k3s-io/klipper-lb) — Built into K3s, iptables-based
-- [kube-vip](https://kube-vip.io/) — Similar to MetalLB, requires ARP/BGP
-- [inlets-operator](https://github.com/inlets/inlets-operator) — Tunnels via cloud VMs (~$5/mo per LB)
-- [cloud-provider-kind](https://github.com/kubernetes-sigs/cloud-provider-kind) — For KIND clusters (development only)
+This project stands on the shoulders of giants:
+
+- **[k3s ServiceLB (klipper-lb)](https://github.com/k3s-io/klipper-lb)** — Our primary inspiration. Built into K3s, uses iptables. We extend this concept to all K8s distributions with better observability.
+- **[MetalLB](https://metallb.universe.tf/)** — The gold standard for bare-metal LoadBalancers. CNCF Sandbox project. Use this if you have network control (ARP/BGP).
+- **[kube-vip](https://kube-vip.io/)** — Another mature solution similar to MetalLB. Great for HA control planes too.
+- **[inlets-operator](https://github.com/inlets/inlets-operator)** — Commercial solution that tunnels via cloud VMs. Great for home labs behind NAT.
+- **[cloud-provider-kind](https://github.com/kubernetes-sigs/cloud-provider-kind)** — Official Kubernetes SIG project for KIND clusters (development only).
+
+**Special thanks to k3s ServiceLB** for pioneering the hostPort-based LoadBalancer approach that made this possible.
 
 ## Project Structure
 
@@ -247,6 +270,15 @@ pytest
     └── ...                   # Optional: Annotates nodes with GCP external IPs
 ```
 
+## Roadmap
+
+- [ ] iptables/nftables backend for better performance (maintain NGINX as default for observability)
+- [ ] Helm chart for easier installation
+- [ ] Node pool support (label-based node selection like k3s ServiceLB)
+- [ ] Tunnel Custom Resource for IPVS compatibility
+- [ ] Prometheus metrics exporter
+- [ ] Support for Service annotations (custom node IPs, backend selection)
+
 ## License
 
 Apache License 2.0
@@ -254,3 +286,9 @@ Apache License 2.0
 ## Contributing
 
 Contributions welcome! This project follows a Kubernetes operator pattern using [Kopf](https://kopf.readthedocs.io/).
+
+**Note:** This is a new project (2025). While inspired by battle-tested solutions like k3s ServiceLB, we recommend thorough testing before production use.
+
+## History
+
+Previously known as `nginx-lb-operator`. Renamed to `bare-service-lb` in 2025 to better reflect its relationship to k3s ServiceLB and clarify that it provides "ServiceLB" functionality for any Kubernetes cluster, not just bare-metal.

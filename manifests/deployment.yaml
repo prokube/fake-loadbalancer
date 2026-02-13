@@ -2,10 +2,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nginx-lb-operator
-  namespace: nginx-lb-operator
+  name: bare-service-lb
+  namespace: bare-service-lb
   labels:
-    app.kubernetes.io/name: nginx-lb-operator
+    app.kubernetes.io/name: bare-service-lb
     app.kubernetes.io/component: operator
 spec:
   replicas: 1
@@ -13,19 +13,19 @@ spec:
     type: Recreate  # Only one operator instance should run at a time
   selector:
     matchLabels:
-      app.kubernetes.io/name: nginx-lb-operator
+      app.kubernetes.io/name: bare-service-lb
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: nginx-lb-operator
+        app.kubernetes.io/name: bare-service-lb
         app.kubernetes.io/component: operator
     spec:
       imagePullSecrets:
         - name: regcred-prokube-dev
-      serviceAccountName: nginx-lb-operator
+      serviceAccountName: bare-service-lb
       containers:
         - name: operator
-          image: europe-west3-docker.pkg.dev/prokube-internal/prokube-dev/nginx-load-balancer:latest
+          image: europe-west3-docker.pkg.dev/prokube-internal/prokube-dev/bare-service-lb:latest
           imagePullPolicy: Always
           resources:
             requests:
