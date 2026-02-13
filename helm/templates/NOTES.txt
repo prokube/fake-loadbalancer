@@ -1,0 +1,59 @@
+Thank you for installing {{ .Chart.Name }}!
+
+bare-service-lb operator has been successfully deployed.
+
+The operator is now watching for LoadBalancer Services across all namespaces.
+
+To verify the operator is running:
+
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "bare-service-lb.name" . }}
+
+To test bare-service-lb:
+
+  1. Create a sample LoadBalancer Service:
+
+     kubectl apply -f - <<YAML
+     apiVersion: v1
+     kind: Service
+     metadata:
+       name: test-lb
+     spec:
+       type: LoadBalancer
+       selector:
+         app: nginx
+       ports:
+         - port: 80
+           targetPort: 80
+     ---
+     apiVersion: apps/v1
+     kind: Deployment
+     metadata:
+       name: nginx
+     spec:
+       replicas: 2
+       selector:
+         matchLabels:
+           app: nginx
+       template:
+         metadata:
+           labels:
+             app: nginx
+         spec:
+           containers:
+           - name: nginx
+             image: nginx:alpine
+             ports:
+             - containerPort: 80
+     YAML
+
+  2. Check the Service status:
+
+     kubectl get svc test-lb
+
+  3. The EXTERNAL-IP field should show your node IPs
+
+  4. Verify the NGINX DaemonSet was created:
+
+     kubectl get daemonset -n {{ .Release.Namespace }}
+
+For more information, visit: https://github.com/prokube/bare-service-lb
