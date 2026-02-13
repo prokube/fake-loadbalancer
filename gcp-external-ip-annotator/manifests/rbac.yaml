@@ -3,7 +3,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: gcp-external-ip-annotator
-  namespace: nginx-lb-operator
+  namespace: bare-service-lb
   labels:
     app.kubernetes.io/name: gcp-external-ip-annotator
     app.kubernetes.io/component: node-annotator
@@ -32,4 +32,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: gcp-external-ip-annotator
-    namespace: nginx-lb-operator
+    namespace: bare-service-lb

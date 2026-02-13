@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: gcp-external-ip-annotator
-  namespace: nginx-lb-operator
+  namespace: bare-service-lb
   labels:
     app.kubernetes.io/name: gcp-external-ip-annotator
     app.kubernetes.io/component: node-annotator
@@ -28,7 +28,7 @@ spec:
           args:
             - |
               set -e
-              ANNOTATION="nginx-lb-operator.prokube.ai/external-ip"
+              ANNOTATION="bare-service-lb.prokube.ai/external-ip"
               METADATA_URL="http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
               INTERVAL="${SYNC_INTERVAL:-300}"
 

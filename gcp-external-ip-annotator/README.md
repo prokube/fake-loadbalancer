@@ -2,8 +2,8 @@
 
 A lightweight DaemonSet that annotates Kubernetes nodes with their GCP external
 IP addresses. Designed to work with the
-[nginx-lb-operator](../README.md), which reads the
-`nginx-lb-operator.prokube.ai/external-ip` annotation to populate
+[bare-service-lb](../README.md), which reads the
+`bare-service-lb.prokube.ai/external-ip` annotation to populate
 `status.loadBalancer.ingress` on managed services.
 
 ## Why
@@ -24,10 +24,10 @@ kubectl apply -f manifests/daemonset.yaml
 
 ```bash
 # Check the DaemonSet is running on all nodes
-kubectl get ds -n nginx-lb-operator gcp-external-ip-annotator
+kubectl get ds -n bare-service-lb gcp-external-ip-annotator
 
 # Check annotations on nodes
-kubectl get nodes -o custom-columns='NAME:.metadata.name,EXTERNAL-IP:.metadata.annotations.nginx-lb-operator\.prokube\.ai/external-ip'
+kubectl get nodes -o custom-columns='NAME:.metadata.name,EXTERNAL-IP:.metadata.annotations.bare-service-lb\.prokube\.ai/external-ip'
 ```
 
 ## Configuration
@@ -41,5 +41,5 @@ Each pod:
 
 1. Reads its node name from the downward API (`spec.nodeName`)
 2. Queries `http://metadata.google.internal/...` for the instance's external IP
-3. Runs `kubectl annotate node <name> nginx-lb-operator.prokube.ai/external-ip=<ip>`
+3. Runs `kubectl annotate node <name> bare-service-lb.prokube.ai/external-ip=<ip>`
 4. Sleeps for `SYNC_INTERVAL` seconds and repeats
