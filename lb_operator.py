@@ -50,6 +50,7 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
         prefix="nginx-lb-operator.prokube.ai",
     )
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -81,18 +82,26 @@ def _safe_name(namespace: str, name: str) -> str:
 
 
 def _build_nginx_config(ports: list[dict[str, Any]]) -> str:
-    """Build an NGINX stream config that proxies hostPort -> NodePort on localhost."""
+    """Build an NGINX stream config that proxies hostPort -> backend.
+
+    The upstream target is chosen based on the ``upstream`` key in each port
+    mapping (set by the handler):
+      - ``<ClusterIP>:<port>`` when the service has
+        ``externalTrafficPolicy: Local`` (NodePort only listens on nodes
+        with a local endpoint, so 127.0.0.1 would fail on other nodes).
+      - ``127.0.0.1:<NodePort>`` for the default ``Cluster`` policy.
+    """
     blocks: list[str] = []
     for p in ports:
         host_port = p["host_port"]
-        node_port = p["node_port"]
+        upstream_target = p["upstream"]
         protocol = p.get("protocol", "TCP").upper()
 
         if protocol == "UDP":
             blocks.append(
                 textwrap.dedent(f"""\
                 upstream upstream_{host_port}_udp {{
-                    server 127.0.0.1:{node_port};
+                    server {upstream_target};
                 }}
                 server {{
                     listen {host_port} udp;
@@ -106,7 +115,7 @@ def _build_nginx_config(ports: list[dict[str, Any]]) -> str:
             blocks.append(
                 textwrap.dedent(f"""\
                 upstream upstream_{host_port} {{
-                    server 127.0.0.1:{node_port};
+                    server {upstream_target};
                 }}
                 server {{
                     listen {host_port};
@@ -440,16 +449,28 @@ async def handle_loadbalancer(
     # Read the service to get auto-assigned NodePorts
     svc = v1.read_namespaced_service(name, namespace)
     svc_ports = svc.spec.ports
+    cluster_ip = svc.spec.cluster_ip
+    etp = svc.spec.external_traffic_policy or "Cluster"
+    use_cluster_ip = etp == "Local"
 
     # ------------------------------------------------------------------
     # 3. Build port mapping
     # ------------------------------------------------------------------
     ports: list[dict[str, Any]] = []
     for p in svc_ports:
+        # When externalTrafficPolicy is Local, NodePort only accepts
+        # traffic on nodes that have a local endpoint.  Since our NGINX
+        # DaemonSet runs on every node, 127.0.0.1:<NodePort> would fail
+        # on nodes without a backing pod.  Route via ClusterIP instead.
+        if use_cluster_ip:
+            upstream = f"{cluster_ip}:{p.port}"
+        else:
+            upstream = f"127.0.0.1:{p.node_port}"
         ports.append(
             {
                 "host_port": p.port,
                 "node_port": p.node_port,
+                "upstream": upstream,
                 "protocol": p.protocol or "TCP",
                 "name": p.name or f"port-{p.port}",
             }
