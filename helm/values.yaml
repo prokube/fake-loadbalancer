@@ -1,6 +1,6 @@
 # Default values for bare-service-lb operator
 
-# Number of operator replicas (should be 1 for proper leader election)
+# Number of operator replicas (can be increased for HA with leader election)
 replicaCount: 1
 
 image:
@@ -82,3 +82,5 @@ affinity: {}
 env:
   - name: PYTHONUNBUFFERED
     value: "1"
+  - name: LEADER_ELECTION_LEASE_NAME
+    value: "bare-service-lb-leader"

@@ -9,7 +9,10 @@ metadata:
 spec:
   replicas: {{ .Values.replicaCount }}
   strategy:
-    type: Recreate  # Only one operator instance should run at a time
+    type: RollingUpdate  # Multiple replicas supported with leader election
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
   selector:
     matchLabels:
       {{- include "bare-service-lb.selectorLabels" . | nindent 6 }}
