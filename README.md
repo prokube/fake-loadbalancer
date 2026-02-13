@@ -153,7 +153,7 @@ When you delete the Service, the operator automatically deletes the associated D
 
 ```bash
 pip install -e ".[dev]"
-kopf run operator.py --all-namespaces --verbose
+kopf run lb_operator.py --all-namespaces --verbose
 ```
 
 This requires a valid kubeconfig pointing at your cluster.
@@ -168,7 +168,7 @@ pytest
 
 ```
 .
-├── operator.py              # Operator logic (Kopf handlers)
+├── lb_operator.py            # Operator logic (Kopf handlers)
 ├── pyproject.toml            # Python project config
 ├── Dockerfile                # Operator container image
 ├── manifests/

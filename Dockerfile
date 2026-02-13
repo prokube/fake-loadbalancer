@@ -9,11 +9,11 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy operator source
-COPY operator.py .
+COPY lb_operator.py .
 RUN uv sync --frozen --no-dev
 
 # Run as non-root
 RUN groupadd --system appuser && useradd --system --gid appuser --create-home appuser
 USER appuser
 
-ENTRYPOINT ["uv", "run", "kopf", "run", "/app/operator.py", "--all-namespaces", "--verbose"]
+ENTRYPOINT ["uv", "run", "/app/lb_operator.py", "--all-namespaces", "--verbose"]

@@ -20,18 +20,17 @@ spec:
         app.kubernetes.io/name: nginx-lb-operator
         app.kubernetes.io/component: operator
     spec:
+      imagePullSecrets:
+        - name: regcred-prokube-dev
       serviceAccountName: nginx-lb-operator
       containers:
         - name: operator
-          image: nginx-lb-operator:latest
+          image: europe-west3-docker.pkg.dev/prokube-internal/prokube-dev/nginx-load-balancer:latest
           imagePullPolicy: IfNotPresent
-          command: ["kopf", "run", "/app/operator.py", "--all-namespaces", "--verbose"]
           resources:
             requests:
               cpu: 50m
               memory: 128Mi
-            limits:
-              memory: 256Mi
           env:
             - name: PYTHONUNBUFFERED
               value: "1"
