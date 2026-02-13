@@ -143,7 +143,7 @@ When you delete the Service, the operator automatically deletes the associated D
 
 ## Limitations
 
-- Two services cannot claim the same `hostPort` — the second DaemonSet will fail to schedule
+- Two services cannot claim the same `hostPort` — the second DaemonSet's pods will fail to schedule and the Service will show no `EXTERNAL-IP` (the operator only reports IPs for nodes where pods are actually Ready)
 - Ports below 1024 require the NGINX container to run with sufficient capabilities (hostPort handles this)
 - The operator uses a single namespace (`nginx-lb-operator`) for all managed resources
 

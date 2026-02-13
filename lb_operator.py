@@ -253,36 +253,81 @@ def _build_daemonset(
     )
 
 
-def _get_node_ips() -> list[str]:
-    """Return the best available IP address for each node.
+def _get_node_ip(node: k8s.V1Node) -> str | None:
+    """Return the best available IP address for a single node.
 
-    Resolution order per node:
+    Resolution order:
       1. ``nginx-lb-operator.prokube.ai/external-ip`` annotation (user/tool provided)
       2. ``ExternalIP`` from node status addresses
       3. ``InternalIP`` from node status addresses
     """
+    # 1. Check for operator annotation (set by external tooling)
+    annotations = (node.metadata.annotations or {}) if node.metadata else {}
+    annotated_ip = annotations.get(EXTERNAL_IP_ANNOTATION)
+    if annotated_ip:
+        return annotated_ip
+
+    # 2. Fall back to node status addresses
+    if not (node.status and node.status.addresses):
+        return None
+    external = None
+    internal = None
+    for addr in node.status.addresses:
+        if addr.type == "ExternalIP":
+            external = addr.address
+        elif addr.type == "InternalIP":
+            internal = addr.address
+    return external or internal
+
+
+def _get_node_ips() -> list[str]:
+    """Return the best available IP address for each node."""
     v1 = k8s.CoreV1Api()
     nodes = v1.list_node()
     ips: list[str] = []
     for node in nodes.items:
-        # 1. Check for operator annotation (set by external tooling)
-        annotations = (node.metadata.annotations or {}) if node.metadata else {}
-        annotated_ip = annotations.get(EXTERNAL_IP_ANNOTATION)
-        if annotated_ip:
-            ips.append(annotated_ip)
-            continue
+        ip = _get_node_ip(node)
+        if ip:
+            ips.append(ip)
+    return sorted(ips)
 
-        # 2. Fall back to node status addresses
-        if not (node.status and node.status.addresses):
+
+def _get_ready_node_ips(ds_name: str) -> list[str]:
+    """Return IPs only for nodes where the DaemonSet pod is Ready.
+
+    This mirrors k3s ServiceLB behaviour: if a pod can't bind hostPort
+    (e.g. port conflict) it never becomes Ready, so its node IP is excluded
+    from the Service status.  A Service whose DaemonSet has zero ready pods
+    will show no EXTERNAL-IP, making the conflict visible to the user.
+    """
+    v1 = k8s.CoreV1Api()
+    pods = v1.list_namespaced_pod(
+        namespace=NAMESPACE,
+        label_selector=f"nginx-lb-operator.prokube.ai/daemonset={ds_name}",
+    )
+
+    ready_node_names: set[str] = set()
+    for pod in pods.items:
+        if not pod.spec.node_name or not pod.status:
             continue
-        external = None
-        internal = None
-        for addr in node.status.addresses:
-            if addr.type == "ExternalIP":
-                external = addr.address
-            elif addr.type == "InternalIP":
-                internal = addr.address
-        ip = external or internal
+        # Check that the pod is Running and all containers are Ready
+        if pod.status.phase != "Running":
+            continue
+        conditions = pod.status.conditions or []
+        is_ready = any(c.type == "Ready" and c.status == "True" for c in conditions)
+        if is_ready:
+            ready_node_names.add(pod.spec.node_name)
+
+    if not ready_node_names:
+        return []
+
+    # Resolve node names to IPs
+    nodes = v1.list_node()
+    ips: list[str] = []
+    for node in nodes.items:
+        if node.metadata.name not in ready_node_names:
+            continue
+        ip = _get_node_ip(node)
         if ip:
             ips.append(ip)
     return sorted(ips)
@@ -438,17 +483,21 @@ async def handle_loadbalancer(
             raise
 
     # ------------------------------------------------------------------
-    # 6. Patch service status with node IPs
+    # 6. Patch service status with node IPs (only where pods are Ready)
     # ------------------------------------------------------------------
-    node_ips = _get_node_ips()
-    _patch_service_status(namespace, name, node_ips)
+    # Right after DaemonSet creation pods won't be Ready yet, so this will
+    # typically set an empty ingress list.  The pod watcher below will
+    # re-patch the status once pods come up.  This is the k3s ServiceLB
+    # pattern: status only reflects nodes that are actually serving traffic.
+    ready_ips = _get_ready_node_ips(ds_name)
+    _patch_service_status(namespace, name, ready_ips)
 
     return {
         "managed": True,
         "daemonset": f"{NAMESPACE}/{ds_name}",
         "configmap": f"{NAMESPACE}/{cm_name}",
         "ports": ports,
-        "node_ips": node_ips,
+        "node_ips": ready_ips,
     }
 
 
@@ -496,6 +545,38 @@ async def handle_delete(
 
 
 # ---------------------------------------------------------------------------
+# Shared helper — refresh status for all managed services
+# ---------------------------------------------------------------------------
+
+
+def _refresh_all_managed_statuses() -> None:
+    """Re-evaluate and patch status for every managed Service.
+
+    For each managed Service we look up its DaemonSet and report only the
+    node IPs where pods are Ready.  This is called when pods or nodes
+    change so that Service status always reflects reality.
+    """
+    v1 = k8s.CoreV1Api()
+    all_services = v1.list_service_for_all_namespaces()
+    for svc in all_services.items:
+        annotations = svc.metadata.annotations or {}
+        if annotations.get("nginx-lb-operator.prokube.ai/managed") != "true":
+            continue
+        svc_ns = svc.metadata.namespace
+        svc_name = svc.metadata.name
+        ds_name = DAEMONSET_PREFIX + _safe_name(svc_ns, svc_name)
+        try:
+            ready_ips = _get_ready_node_ips(ds_name)
+            _patch_service_status(svc_ns, svc_name, ready_ips)
+        except kubernetes.client.exceptions.ApiException:
+            logger.exception(
+                "Failed to update status for %s/%s",
+                svc_ns,
+                svc_name,
+            )
+
+
+# ---------------------------------------------------------------------------
 # Node watcher — update ingress IPs when nodes change
 # ---------------------------------------------------------------------------
 
@@ -503,24 +584,56 @@ async def handle_delete(
 @kopf.on.create("nodes")
 @kopf.on.delete("nodes")
 async def handle_node_change(**_: Any) -> None:
-    """When nodes are added/removed, update all managed service statuses."""
-    v1 = k8s.CoreV1Api()
-    node_ips = _get_node_ips()
+    """When nodes are added/removed, re-evaluate all managed service statuses."""
+    _refresh_all_managed_statuses()
 
-    # Find all services we manage (across all namespaces)
-    all_services = v1.list_service_for_all_namespaces()
-    for svc in all_services.items:
-        annotations = svc.metadata.annotations or {}
-        if annotations.get("nginx-lb-operator.prokube.ai/managed") == "true":
-            try:
-                _patch_service_status(
-                    svc.metadata.namespace,
-                    svc.metadata.name,
-                    node_ips,
-                )
-            except kubernetes.client.exceptions.ApiException:
-                logger.exception(
-                    "Failed to update status for %s/%s",
-                    svc.metadata.namespace,
-                    svc.metadata.name,
-                )
+
+# ---------------------------------------------------------------------------
+# Pod watcher — update ingress IPs when DaemonSet pods become Ready
+# ---------------------------------------------------------------------------
+
+
+@kopf.on.event(
+    "pods",
+    labels={OPERATOR_LABEL: "true"},
+    when=lambda namespace, **_: namespace == NAMESPACE,
+)
+async def handle_pod_event(
+    event: dict[str, Any],
+    meta: dict[str, Any],
+    **_: Any,
+) -> None:
+    """When a managed DaemonSet pod changes, refresh the owning Service status.
+
+    This is the key piece that makes the k3s-style status work: after
+    ``handle_loadbalancer`` creates the DaemonSet, pods take a moment to
+    schedule and become Ready.  This watcher picks up those transitions
+    and patches the Service status with accurate node IPs.
+    """
+    labels = meta.get("labels", {})
+    ds_label = labels.get("nginx-lb-operator.prokube.ai/daemonset", "")
+    if not ds_label:
+        return
+
+    # Resolve the DaemonSet back to its owning Service via DaemonSet labels
+    apps_v1 = k8s.AppsV1Api()
+    try:
+        ds = apps_v1.read_namespaced_daemon_set(ds_label, NAMESPACE)
+    except kubernetes.client.exceptions.ApiException:
+        return  # DaemonSet may already be deleted
+
+    ds_labels = ds.metadata.labels or {}
+    svc_ns = ds_labels.get("nginx-lb-operator.prokube.ai/service-namespace")
+    svc_name = ds_labels.get("nginx-lb-operator.prokube.ai/service-name")
+    if not svc_ns or not svc_name:
+        return
+
+    try:
+        ready_ips = _get_ready_node_ips(ds_label)
+        _patch_service_status(svc_ns, svc_name, ready_ips)
+    except kubernetes.client.exceptions.ApiException:
+        logger.exception(
+            "Failed to update status for %s/%s from pod event",
+            svc_ns,
+            svc_name,
+        )
