@@ -37,6 +37,10 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Watch pods cluster-wide (needed by handle_pod_event to track DaemonSet pod readiness)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
   # Manage DaemonSets in the operator namespace
   - apiGroups: ["apps"]
     resources: ["daemonsets"]

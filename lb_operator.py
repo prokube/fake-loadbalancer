@@ -36,6 +36,7 @@ NGINX_IMAGE = "nginx:1.27-alpine"
 DAEMONSET_PREFIX = "nginx-lb-"
 CONFIGMAP_PREFIX = "nginx-lb-cfg-"
 NAMESPACE = "nginx-lb-operator"  # namespace where DaemonSets/ConfigMaps live
+STALE_FINALIZER = "nginx-lb-operator.io/cleanup"  # old finalizer from previous naming
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -50,6 +51,51 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage(
         prefix="nginx-lb-operator.prokube.ai",
     )
+
+
+@kopf.on.startup()
+def cleanup_stale_finalizers(**_: Any) -> None:
+    """Remove orphaned finalizers from services on startup.
+
+    Cleans up two issues:
+      1. ``nginx-lb-operator.io/cleanup`` — stale finalizer from an earlier
+         naming convention, present on various services.
+      2. ``nginx-lb-operator.prokube.ai/cleanup`` — the current finalizer,
+         but erroneously attached to non-managed services due to the
+         ``@kopf.on.delete`` handler previously lacking a filter.
+
+    Both would permanently block service deletion if left in place.
+    """
+    v1 = k8s.CoreV1Api()
+    all_services = v1.list_service_for_all_namespaces()
+    for svc in all_services.items:
+        finalizers = svc.metadata.finalizers or []
+        annotations = svc.metadata.annotations or {}
+        is_managed = annotations.get("nginx-lb-operator.prokube.ai/managed") == "true"
+
+        removals: list[str] = []
+        # Always remove the stale finalizer
+        if STALE_FINALIZER in finalizers:
+            removals.append(STALE_FINALIZER)
+        # Remove current finalizer from non-managed services (finalizer pollution)
+        if FINALIZER in finalizers and not is_managed:
+            removals.append(FINALIZER)
+
+        if not removals:
+            continue
+
+        new_finalizers = [f for f in finalizers if f not in removals]
+        v1.patch_namespaced_service(
+            svc.metadata.name,
+            svc.metadata.namespace,
+            {"metadata": {"finalizers": new_finalizers}},
+        )
+        logger.info(
+            "Removed orphaned finalizers %s from %s/%s",
+            removals,
+            svc.metadata.namespace,
+            svc.metadata.name,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +587,10 @@ async def handle_loadbalancer(
     }
 
 
-@kopf.on.delete("services")
+@kopf.on.delete(
+    "services",
+    annotations={"nginx-lb-operator.prokube.ai/managed": "true"},
+)
 async def handle_delete(
     namespace: str,
     name: str,
