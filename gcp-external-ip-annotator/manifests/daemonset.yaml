@@ -17,6 +17,8 @@ spec:
         app.kubernetes.io/name: gcp-external-ip-annotator
         app.kubernetes.io/component: node-annotator
     spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       serviceAccountName: gcp-external-ip-annotator
       terminationGracePeriodSeconds: 5
       containers:
