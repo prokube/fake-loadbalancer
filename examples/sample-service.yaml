@@ -1,0 +1,47 @@
+# Example: LoadBalancer Service
+#
+# Apply this to see the operator in action:
+#   kubectl apply -f examples/sample-service.yaml
+#   kubectl get svc sample-web
+#
+# The operator will:
+#   1. Convert it to NodePort
+#   2. Deploy an NGINX DaemonSet with hostPort: 80
+#   3. Set EXTERNAL-IP to node IPs
+#
+# Then curl any node IP on port 80 to reach the service.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-web
+  labels:
+    app: sample-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sample-web
+  template:
+    metadata:
+      labels:
+        app: sample-web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-web
+spec:
+  type: LoadBalancer
+  selector:
+    app: sample-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

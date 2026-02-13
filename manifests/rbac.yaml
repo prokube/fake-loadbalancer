@@ -1,0 +1,69 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nginx-lb-operator
+  labels:
+    app.kubernetes.io/managed-by: nginx-lb-operator
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx-lb-operator
+  namespace: nginx-lb-operator
+  labels:
+    app.kubernetes.io/name: nginx-lb-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nginx-lb-operator
+  labels:
+    app.kubernetes.io/name: nginx-lb-operator
+rules:
+  # Watch/List/Get/Update Services across all namespaces
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # Update Service status subresource
+  - apiGroups: [""]
+    resources: ["services/status"]
+    verbs: ["patch", "update"]
+  # List nodes to get IPs
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Manage ConfigMaps in the operator namespace
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Manage DaemonSets in the operator namespace
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Manage namespaces (to create the operator namespace)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create"]
+  # Kopf needs events and leases for leader election and event posting
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nginx-lb-operator
+  labels:
+    app.kubernetes.io/name: nginx-lb-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nginx-lb-operator
+subjects:
+  - kind: ServiceAccount
+    name: nginx-lb-operator
+    namespace: nginx-lb-operator

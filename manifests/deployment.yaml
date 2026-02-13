@@ -1,0 +1,49 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-lb-operator
+  namespace: nginx-lb-operator
+  labels:
+    app.kubernetes.io/name: nginx-lb-operator
+    app.kubernetes.io/component: operator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Only one operator instance should run at a time
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-lb-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nginx-lb-operator
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: nginx-lb-operator
+      containers:
+        - name: operator
+          image: nginx-lb-operator:latest
+          imagePullPolicy: IfNotPresent
+          command: ["kopf", "run", "/app/operator.py", "--all-namespaces", "--verbose"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
