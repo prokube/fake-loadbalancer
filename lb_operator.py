@@ -13,6 +13,7 @@ Flow:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import textwrap
 from typing import Any
@@ -56,11 +57,28 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
 
 
 def _safe_name(namespace: str, name: str) -> str:
-    """Derive a deterministic, DNS-safe resource name from a service reference."""
+    """Derive a deterministic, DNS-safe resource name from a service reference.
+
+    The result is used with prefixes like ``DAEMONSET_PREFIX`` (9 chars) and
+    ``CONFIGMAP_PREFIX`` (13 chars) to build both Kubernetes resource names
+    *and* label values.  Label values are limited to 63 characters, so with
+    the longest prefix (13 chars) this function must return at most 50
+    characters.
+
+    When the raw ``namespace-name`` string exceeds that limit we truncate
+    and append a short hash to preserve uniqueness.
+    """
+    # The longest prefix is CONFIGMAP_PREFIX (13 chars).
+    # 63 (label limit) - 13 (prefix) = 50 chars max for the safe name.
+    max_len = 50
     raw = f"{namespace}-{name}"
-    # Kubernetes names max 253 chars; truncate and strip trailing hyphens
-    safe = raw[:245].rstrip("-")
-    return safe
+    if len(raw) <= max_len:
+        return raw
+    # Truncate and append an 8-char hash for uniqueness
+    suffix = hashlib.sha256(raw.encode()).hexdigest()[:8]
+    # max_len - 1 (hyphen) - 8 (hash) = 41 chars for truncated prefix
+    truncated = raw[: max_len - 9].rstrip("-")
+    return f"{truncated}-{suffix}"
 
 
 def _build_nginx_config(ports: list[dict[str, Any]]) -> str:
