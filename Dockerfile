@@ -13,7 +13,7 @@ COPY operator.py .
 RUN uv sync --frozen --no-dev
 
 # Run as non-root
-RUN useradd --create-home --shell /bin/bash operator
-USER operator
+RUN groupadd --system appuser && useradd --system --gid appuser --create-home appuser
+USER appuser
 
 ENTRYPOINT ["uv", "run", "kopf", "run", "/app/operator.py", "--all-namespaces", "--verbose"]
