@@ -77,6 +77,14 @@ tolerations: []
 # Affinity rules for pod scheduling
 affinity: {}
 
+# Default proxy backend: "nginx" (with access logs) or "klipper" (iptables, better performance)
+defaultBackend: nginx
+
+# Klipper-lb image (used when backend is "klipper")
+klipperImage:
+  repository: rancher/klipper-lb
+  tag: v0.4.9
+
 # Environment variables for the operator
 env:
   - name: PYTHONUNBUFFERED

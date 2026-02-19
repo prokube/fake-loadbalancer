@@ -2,16 +2,20 @@
 bare-service-lb: ServiceLB for bare-metal, cloud VMs, and anywhere without a cloud LoadBalancer.
 
 Inspired by k3s ServiceLB, this operator brings zero-configuration LoadBalancer services
-to any Kubernetes distribution with better observability through NGINX.
+to any Kubernetes distribution with pluggable proxy backends.
+
+Backends:
+  - nginx (default): NGINX stream proxy with access logs for observability
+  - klipper: iptables/nftables DNAT via klipper-lb (from k3s) for better performance
 
 Flow:
   1. User creates Service type=LoadBalancer (port 80, Kubernetes auto-assigns e.g. NodePort 30764)
   2. Operator marks it as managed (keeps type as LoadBalancer)
-  3. Operator creates/updates a ConfigMap with NGINX stream config:
-       stream { upstream backend { server 127.0.0.1:30764; } server { listen 80; proxy_pass backend; } }
-  4. Operator creates/updates a DaemonSet running NGINX with hostPort on the original port
-  5. Operator patches Service .status.loadBalancer.ingress with node IPs
-  6. On delete, operator tears down the DaemonSet + ConfigMap
+  3. Operator creates proxy resources based on the selected backend:
+       - nginx: ConfigMap with NGINX stream config + DaemonSet with hostPort
+       - klipper: DaemonSet with hostNetwork and iptables DNAT rules (no ConfigMap)
+  4. Operator patches Service .status.loadBalancer.ingress with node IPs
+  5. On delete, operator tears down the DaemonSet (+ ConfigMap if nginx)
 """
 
 from __future__ import annotations
@@ -37,6 +41,9 @@ FINALIZER = "bare-service-lb.prokube.ai/cleanup"
 EXTERNAL_IP_ANNOTATION = "bare-service-lb.prokube.ai/external-ip"
 RECONCILED_ANNOTATION = "bare-service-lb.prokube.ai/reconciled"
 NGINX_IMAGE = "nginx:1.27-alpine"
+KLIPPER_IMAGE = os.environ.get("BSL_KLIPPER_IMAGE", "rancher/klipper-lb:v0.4.9")
+BACKEND_ANNOTATION = "bare-service-lb.prokube.ai/backend"
+DEFAULT_BACKEND = os.environ.get("BSL_DEFAULT_BACKEND", "nginx")
 DAEMONSET_PREFIX = "bsl-"
 CONFIGMAP_PREFIX = "bsl-cfg-"
 NAMESPACE = "bare-service-lb"  # namespace where DaemonSets/ConfigMaps live
@@ -57,9 +64,7 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     # Enable leader election for high availability
     # Multiple operator replicas can run, but only one will be active
     settings.peering.standalone = False
-    settings.peering.name = os.environ.get(
-        "LEADER_ELECTION_LEASE_NAME", "bare-service-lb-leader"
-    )
+    settings.peering.name = os.environ.get("LEADER_ELECTION_LEASE_NAME", "bare-service-lb-leader")
     settings.peering.mandatory = True
 
 
@@ -110,8 +115,7 @@ def _build_nginx_config(ports: list[dict[str, Any]]) -> str:
         protocol = p.get("protocol", "TCP").upper()
 
         if protocol == "UDP":
-            blocks.append(
-                textwrap.dedent(f"""\
+            blocks.append(textwrap.dedent(f"""\
                 upstream upstream_{host_port}_udp {{
                     server {upstream_target};
                 }}
@@ -121,11 +125,9 @@ def _build_nginx_config(ports: list[dict[str, Any]]) -> str:
                     proxy_timeout 3s;
                     proxy_responses 1;
                 }}
-            """)
-            )
+            """))
         else:
-            blocks.append(
-                textwrap.dedent(f"""\
+            blocks.append(textwrap.dedent(f"""\
                 upstream upstream_{host_port} {{
                     server {upstream_target};
                 }}
@@ -133,8 +135,7 @@ def _build_nginx_config(ports: list[dict[str, Any]]) -> str:
                     listen {host_port};
                     proxy_pass upstream_{host_port};
                 }}
-            """)
-            )
+            """))
 
     inner = textwrap.indent("".join(blocks), "    ")
     return f"stream {{\n{inner}}}\n"
@@ -285,6 +286,119 @@ def _build_daemonset(
                             ),
                         ),
                     ],
+                ),
+            ),
+        ),
+    )
+
+
+def _get_backend(annotations: dict[str, str]) -> str:
+    """Return the proxy backend for a service.
+
+    Resolution order:
+      1. Service annotation ``bare-service-lb.prokube.ai/backend``
+      2. ``BSL_DEFAULT_BACKEND`` environment variable
+      3. ``"nginx"`` (hardcoded default)
+    """
+    backend = annotations.get(BACKEND_ANNOTATION, DEFAULT_BACKEND).lower()
+    if backend not in ("nginx", "klipper"):
+        logger.warning(
+            "Unknown backend %r, falling back to nginx",
+            backend,
+        )
+        return "nginx"
+    return backend
+
+
+def _build_klipper_daemonset(
+    svc_namespace: str,
+    svc_name: str,
+    ports: list[dict[str, Any]],
+    owner_uid: str,
+) -> k8s.V1DaemonSet:
+    """Build a klipper-lb DaemonSet with iptables DNAT rules.
+
+    Unlike the NGINX backend, klipper-lb:
+      - Uses ``hostNetwork: true`` (iptables PREROUTING rules)
+      - Needs ``NET_ADMIN`` capability
+      - Takes one container per port (each handles one SRC_PORT/DEST_PORT pair)
+      - Requires no ConfigMap — all configuration via environment variables
+    """
+    ds_name = DAEMONSET_PREFIX + _safe_name(svc_namespace, svc_name)
+
+    containers: list[k8s.V1Container] = []
+    for p in ports:
+        host_port = p["host_port"]
+        upstream = p["upstream"]
+        protocol = p.get("protocol", "TCP").upper()
+        port_name = p.get("name", f"port-{host_port}")
+
+        # Parse upstream "host:port" into dest_ip and dest_port
+        upstream_host, upstream_port = upstream.rsplit(":", 1)
+
+        containers.append(
+            k8s.V1Container(
+                name=f"lb-{port_name}"[:63],
+                image=KLIPPER_IMAGE,
+                env=[
+                    k8s.V1EnvVar(name="SRC_PORT", value=str(host_port)),
+                    k8s.V1EnvVar(name="DEST_PORT", value=upstream_port),
+                    k8s.V1EnvVar(name="DEST_PROTO", value=protocol.lower()),
+                    k8s.V1EnvVar(name="DEST_IPS", value=upstream_host),
+                ],
+                security_context=k8s.V1SecurityContext(
+                    capabilities=k8s.V1Capabilities(add=["NET_ADMIN"]),
+                ),
+                resources=k8s.V1ResourceRequirements(
+                    requests={"cpu": "10m", "memory": "16Mi"},
+                    limits={"memory": "32Mi"},
+                ),
+            )
+        )
+
+    return k8s.V1DaemonSet(
+        metadata=k8s.V1ObjectMeta(
+            name=ds_name,
+            namespace=NAMESPACE,
+            labels={
+                OPERATOR_LABEL: "true",
+                MANAGED_BY_LABEL: "bare-service-lb",
+                "bare-service-lb.prokube.ai/service-namespace": svc_namespace,
+                "bare-service-lb.prokube.ai/service-name": svc_name,
+                "bare-service-lb.prokube.ai/backend": "klipper",
+            },
+            annotations={
+                "bare-service-lb.prokube.ai/owner-uid": owner_uid,
+            },
+        ),
+        spec=k8s.V1DaemonSetSpec(
+            selector=k8s.V1LabelSelector(
+                match_labels={
+                    "bare-service-lb.prokube.ai/daemonset": ds_name,
+                },
+            ),
+            template=k8s.V1PodTemplateSpec(
+                metadata=k8s.V1ObjectMeta(
+                    labels={
+                        "bare-service-lb.prokube.ai/daemonset": ds_name,
+                        OPERATOR_LABEL: "true",
+                    },
+                ),
+                spec=k8s.V1PodSpec(
+                    tolerations=[
+                        k8s.V1Toleration(
+                            key="node-role.kubernetes.io/control-plane",
+                            operator="Exists",
+                            effect="NoSchedule",
+                        ),
+                        k8s.V1Toleration(
+                            key="node-role.kubernetes.io/master",
+                            operator="Exists",
+                            effect="NoSchedule",
+                        ),
+                    ],
+                    host_network=True,
+                    containers=containers,
                 ),
             ),
         ),
@@ -489,44 +603,58 @@ async def handle_loadbalancer(
         )
 
     # ------------------------------------------------------------------
-    # 4. Generate NGINX config and create/update ConfigMap
+    # 4. Determine backend and create proxy resources
     # ------------------------------------------------------------------
     _ensure_namespace()
 
-    nginx_stream_conf = _build_nginx_config(ports)
-    # Also generate a top-level nginx.conf that includes the stream block
-    nginx_main_conf = textwrap.dedent("""\
-        worker_processes auto;
-        error_log /var/log/nginx/error.log warn;
-        pid /tmp/nginx.pid;
+    backend = _get_backend(annotations)
+    cm_name = CONFIGMAP_PREFIX + _safe_name(namespace, name)
 
-        events {
-            worker_connections 1024;
-        }
+    if backend == "klipper":
+        # Klipper backend: no ConfigMap needed, just a DaemonSet
+        # Clean up any leftover ConfigMap from a previous nginx backend
+        try:
+            v1.delete_namespaced_config_map(cm_name, NAMESPACE)
+            logger.info("Cleaned up old nginx ConfigMap %s/%s", NAMESPACE, cm_name)
+        except kubernetes.client.exceptions.ApiException as exc:
+            if exc.status != 404:
+                raise
 
-        include /etc/nginx/stream.conf;
-    """)
+        ds = _build_klipper_daemonset(namespace, name, ports, uid)
+    else:
+        # NGINX backend: ConfigMap + DaemonSet
+        nginx_stream_conf = _build_nginx_config(ports)
+        nginx_main_conf = textwrap.dedent("""\
+            worker_processes auto;
+            error_log /var/log/nginx/error.log warn;
+            pid /tmp/nginx.pid;
 
-    cm = _build_configmap(namespace, name, nginx_stream_conf, uid)
-    cm.data["nginx.conf"] = nginx_main_conf
-    cm_name = cm.metadata.name
+            events {
+                worker_connections 1024;
+            }
 
-    try:
-        apps_v1_core = k8s.CoreV1Api()
-        apps_v1_core.read_namespaced_config_map(cm_name, NAMESPACE)
-        apps_v1_core.replace_namespaced_config_map(cm_name, NAMESPACE, cm)
-        logger.info("Updated ConfigMap %s/%s", NAMESPACE, cm_name)
-    except kubernetes.client.exceptions.ApiException as exc:
-        if exc.status == 404:
-            k8s.CoreV1Api().create_namespaced_config_map(NAMESPACE, cm)
-            logger.info("Created ConfigMap %s/%s", NAMESPACE, cm_name)
-        else:
-            raise
+            include /etc/nginx/stream.conf;
+        """)
+
+        cm = _build_configmap(namespace, name, nginx_stream_conf, uid)
+        cm.data["nginx.conf"] = nginx_main_conf
+
+        try:
+            v1.read_namespaced_config_map(cm_name, NAMESPACE)
+            v1.replace_namespaced_config_map(cm_name, NAMESPACE, cm)
+            logger.info("Updated ConfigMap %s/%s", NAMESPACE, cm_name)
+        except kubernetes.client.exceptions.ApiException as exc:
+            if exc.status == 404:
+                v1.create_namespaced_config_map(NAMESPACE, cm)
+                logger.info("Created ConfigMap %s/%s", NAMESPACE, cm_name)
+            else:
+                raise
+
+        ds = _build_daemonset(namespace, name, ports, uid)
 
     # ------------------------------------------------------------------
     # 5. Create/update DaemonSet
     # ------------------------------------------------------------------
-    ds = _build_daemonset(namespace, name, ports, uid)
     ds_name = ds.metadata.name
 
     try:
@@ -561,12 +689,13 @@ async def handle_loadbalancer(
         namespace,
         {"metadata": {"annotations": {RECONCILED_ANNOTATION: "true"}}},
     )
-    logger.info("Marked %s/%s as reconciled", namespace, name)
+    logger.info("Marked %s/%s as reconciled (backend=%s)", namespace, name, backend)
 
     return {
         "managed": True,
+        "backend": backend,
         "daemonset": f"{NAMESPACE}/{ds_name}",
-        "configmap": f"{NAMESPACE}/{cm_name}",
+        "configmap": f"{NAMESPACE}/{cm_name}" if backend == "nginx" else None,
         "ports": ports,
         "node_ips": ready_ips,
     }

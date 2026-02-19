@@ -145,6 +145,41 @@ spec:
 
 The operator creates a single DaemonSet with both `hostPort: 80` and `hostPort: 443`.
 
+## Backend Selection
+
+bare-service-lb supports two proxy backends:
+
+| Backend | Image | How it works | Best for |
+|---------|-------|--------------|----------|
+| `nginx` (default) | `nginx:1.27-alpine` | NGINX stream proxy with `hostPort` | Observability (access logs) |
+| `klipper` | `rancher/klipper-lb` | iptables DNAT with `hostNetwork` | Performance (kernel-level NAT) |
+
+### Global default
+
+Set in Helm values:
+
+```yaml
+defaultBackend: klipper  # or "nginx" (default)
+```
+
+### Per-service override
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app
+  annotations:
+    bare-service-lb.prokube.ai/backend: klipper
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 8080
+```
+
+The per-service annotation takes precedence over the global default, so you can mix backends in the same cluster.
+
 ## UDP Support
 
 UDP ports are also handled:
@@ -168,8 +203,8 @@ When you delete the Service, the operator automatically deletes the associated D
 | Component | Namespace | Purpose |
 |-----------|-----------|---------|
 | Operator Deployment | `bare-service-lb` | Watches services, manages lifecycle |
-| NGINX DaemonSet (per service) | `bare-service-lb` | Runs on every node with `hostPort` |
-| ConfigMap (per service) | `bare-service-lb` | Holds NGINX `stream {}` config |
+| Proxy DaemonSet (per service) | `bare-service-lb` | NGINX with `hostPort` or klipper-lb with `hostNetwork` |
+| ConfigMap (per service, nginx only) | `bare-service-lb` | Holds NGINX `stream {}` config |
 | ClusterKopfPeering | cluster-wide | Coordinates leader election between operator replicas |
 
 ### High Availability
@@ -304,7 +339,7 @@ This project stands on the shoulders of giants:
 
 ## Roadmap
 
-- [ ] iptables/nftables backend for better performance (maintain NGINX as default for observability)
+- [x] iptables/nftables backend via klipper-lb for better performance (maintain NGINX as default for observability)
 - [x] Helm chart for easier installation
 - [ ] Node pool support (label-based node selection like k3s ServiceLB)
 - [ ] Tunnel Custom Resource for IPVS compatibility
