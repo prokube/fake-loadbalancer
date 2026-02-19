@@ -297,7 +297,7 @@ User → Routed IP (BGP advertisement to routers) → kube-proxy → Service Clu
 
 ```bash
 pip install -e ".[dev]"
-kopf run lb_operator.py --all-namespaces --verbose
+kopf run -m lb_operator --all-namespaces --verbose
 ```
 
 This requires a valid kubeconfig pointing at your cluster.
@@ -324,7 +324,15 @@ This project stands on the shoulders of giants:
 
 ```
 .
-├── lb_operator.py            # Operator logic (Kopf handlers, 706 lines)
+├── lb_operator/              # Operator package
+│   ├── __init__.py           # Package entry point
+│   ├── constants.py          # Labels, annotations, image refs, defaults
+│   ├── utils.py            # Resource naming, node IP resolution, status patching
+│   ├── handlers.py           # Kopf event handlers and watchers
+│   └── backends/
+│       ├── __init__.py       # Backend selection (get_backend)
+│       ├── nginx.py          # NGINX stream proxy backend
+│       └── klipper.py        # Klipper-lb iptables backend
 ├── pyproject.toml            # Python project config
 ├── Dockerfile                # Multi-stage build with uv
 ├── helm/
