@@ -33,7 +33,7 @@ All operator-managed resources (DaemonSets, ConfigMaps) live in the `bare-servic
 | `lb_operator/backends/nginx.py` | NGINX config, ConfigMap, and DaemonSet builders. | NGINX-specific issues. |
 | `lb_operator/backends/klipper.py` | Klipper-lb DaemonSet builder (iptables DNAT). | Klipper-specific issues. |
 | `lb_operator/handlers.py` | Kopf event handlers: startup, service create/delete, node/pod watchers. | Handler logic, event flow. |
-| `pyproject.toml` | Dependencies (`kopf`, `kubernetes`, `pyyaml`), dev tools (`ruff`, `mypy`, `pytest`). | Dependency issues, version constraints, lint/type config. |
+| `pyproject.toml` | Dependencies (`kopf`, `kubernetes`, `pyyaml`), dev tools (`pyright`, `pylint`, `black`, `isort`, `pytest`). | Dependency issues, version constraints, lint/type config. |
 | `Dockerfile` | Multi-stage build using `uv`. Entrypoint runs `kopf run`. | Build failures, image issues. |
 | `helm/` | Helm chart for deployment (RBAC, Deployment, ServiceAccount, ClusterKopfPeering CRD). | RBAC permission errors, deployment config, leader election issues. |
 | `helm/values.yaml` | Default Helm values (image, replicas, resources, probes, env vars). | Runtime configuration questions. |
@@ -150,13 +150,14 @@ uv sync --dev           # or: pip install -e ".[dev]"
 kopf run -m lb_operator --all-namespaces --verbose
 
 # Lint
-ruff check lb_operator/
+pylint lb_operator/
 
 # Type check
-mypy lb_operator/
+pyright lb_operator/
 
 # Format
-ruff format lb_operator/
+black lb_operator/
+isort --profile black lb_operator/
 
 # Build container image
 docker build -t bare-service-lb:latest .
@@ -176,7 +177,7 @@ helm install bare-service-lb ./helm --namespace bare-service-lb --create-namespa
 | `kubernetes` | >=31, <33 | Official Kubernetes Python client |
 | `pyyaml` | >=6, <7 | YAML parsing (kopf dependency) |
 
-Dev-only: `pytest`, `pytest-asyncio`, `ruff`, `mypy`
+Dev-only: `pytest`, `pytest-asyncio`, `pyright`, `pylint`, `black`, `isort`
 
 ## CI/CD
 

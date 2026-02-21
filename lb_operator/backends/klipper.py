@@ -24,9 +24,14 @@ def build_daemonset(
 ) -> k8s.V1DaemonSet:
     """Build a klipper-lb DaemonSet with iptables DNAT rules.
 
-    Unlike the NGINX backend, klipper-lb:
-      - Uses ``hostNetwork: true`` (iptables PREROUTING rules)
-      - Needs ``NET_ADMIN`` capability
+    Like the NGINX backend, klipper-lb uses ``hostPort`` (not ``hostNetwork``)
+    so that iptables rules created by the klipper-lb entry script live inside
+    the pod's network namespace.  When the pod is terminated the namespace is
+    destroyed and all rules are cleaned up automatically — no stale iptables
+    on the host.  This matches the approach used by k3s ServiceLB.
+
+    Key differences from the NGINX backend:
+      - Needs ``NET_ADMIN`` capability (iptables inside the pod netns)
       - Takes one container per port (each handles one SRC_PORT/DEST_PORT pair)
       - Requires no ConfigMap — all configuration via environment variables
     """
@@ -46,6 +51,14 @@ def build_daemonset(
             k8s.V1Container(
                 name=f"lb-{port_name}"[:63],
                 image=KLIPPER_IMAGE,
+                ports=[
+                    k8s.V1ContainerPort(
+                        name=f"lb-{port_name}"[:15],
+                        container_port=host_port,
+                        host_port=host_port,
+                        protocol=protocol,
+                    ),
+                ],
                 env=[
                     k8s.V1EnvVar(name="SRC_PORT", value=str(host_port)),
                     k8s.V1EnvVar(name="DEST_PORT", value=upstream_port),
@@ -103,7 +116,7 @@ def build_daemonset(
                             effect="NoSchedule",
                         ),
                     ],
-                    host_network=True,
+                    host_network=False,
                     containers=containers,
                 ),
             ),
