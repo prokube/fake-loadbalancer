@@ -6,7 +6,8 @@ replicaCount: 1
 image:
   repository: ghcr.io/prokube/bare-service-lb
   pullPolicy: Always
-  tag: latest
+  # Overrides the image tag. Defaults to the chart appVersion if empty.
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""

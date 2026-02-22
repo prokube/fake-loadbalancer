@@ -81,7 +81,8 @@ Create a `custom-values.yaml` file:
 replicaCount: 2
 
 image:
-  tag: "latest"
+  # By default the chart uses appVersion as the image tag.
+  # Set tag to override it, e.g.: tag: "latest"
 
 resources:
   requests:
