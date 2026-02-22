@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**bare-service-lb** is a Kubernetes operator that provides `LoadBalancer`-type Service support on bare-metal clusters, cloud VMs, and anywhere without a native cloud load balancer. Inspired by k3s ServiceLB (klipper-lb), it deploys NGINX DaemonSets with `hostPort` to make services reachable on every node at the original port.
+**bare-service-lb** is a Kubernetes operator that provides `LoadBalancer`-type Service support on bare-metal clusters, cloud VMs, and anywhere without a native cloud load balancer. Inspired by k3s ServiceLB (klipper-lb), it deploys DaemonSets with `hostPort` to make services reachable on every node at the original port. Two proxy backends are supported: **nginx** (default, NGINX stream proxy with access logs) and **klipper** (klipper-lb image, iptables/nftables DNAT).
 
 **Language:** Python 3.11+
 **Framework:** [Kopf](https://kopf.readthedocs.io/) (Kubernetes Operator Pythonic Framework)
@@ -13,10 +13,16 @@
 ```
 User creates Service type=LoadBalancer (port 80)
   → K8s auto-assigns NodePort (e.g. 30764)
+
+  [nginx backend — default]
   → Operator creates ConfigMap with NGINX stream config
   → Operator creates DaemonSet (NGINX with hostPort:80 → upstream 127.0.0.1:30764)
+
+  [klipper backend]
+  → Operator creates DaemonSet (klipper-lb with hostPort:80 → DNAT to NodePort 30764)
+
   → Operator patches Service .status.loadBalancer.ingress with node IPs
-  → On delete: tears down DaemonSet + ConfigMap
+  → On delete: tears down DaemonSet (+ ConfigMap if nginx)
 ```
 
 All operator-managed resources (DaemonSets, ConfigMaps) live in the `bare-service-lb` namespace.
@@ -27,6 +33,7 @@ All operator-managed resources (DaemonSets, ConfigMaps) live in the `bare-servic
 |------|-----------|-------------------|
 | `lb_operator/` | **Operator package** — all operator logic split into focused modules. | Any bug or feature. |
 | `lb_operator/__init__.py` | Package entry point — imports `handlers` so Kopf discovers them. | Startup issues. |
+| `lb_operator/__main__.py` | `python3 -m lb_operator` entry point — calls `kopf.run()` with liveness endpoint. | Entrypoint / liveness issues. |
 | `lb_operator/constants.py` | Labels, annotations, image refs, prefixes, namespace. | Changing defaults. |
 | `lb_operator/utils.py` | Resource naming, node IP resolution, service status patching, namespace management. | Naming, IP selection, status issues. |
 | `lb_operator/backends/__init__.py` | Backend selection (`get_backend()`). | Adding a new backend. |
@@ -34,7 +41,7 @@ All operator-managed resources (DaemonSets, ConfigMaps) live in the `bare-servic
 | `lb_operator/backends/klipper.py` | Klipper-lb DaemonSet builder (iptables DNAT). | Klipper-specific issues. |
 | `lb_operator/handlers.py` | Kopf event handlers: startup, service create/delete, node/pod watchers. | Handler logic, event flow. |
 | `pyproject.toml` | Dependencies (`kopf`, `kubernetes`, `pyyaml`), dev tools (`pyright`, `pylint`, `black`, `isort`, `pytest`). | Dependency issues, version constraints, lint/type config. |
-| `Dockerfile` | Multi-stage build using `uv`. Entrypoint runs `kopf run`. | Build failures, image issues. |
+| `Dockerfile` | Multi-stage build using `uv`. Entrypoint runs `python3 -m lb_operator`. | Build failures, image issues. |
 | `helm/` | Helm chart for deployment (RBAC, Deployment, ServiceAccount, ClusterKopfPeering CRD). | RBAC permission errors, deployment config, leader election issues. |
 | `helm/values.yaml` | Default Helm values (image, replicas, resources, probes, env vars). | Runtime configuration questions. |
 | `helm/templates/clusterrole.yaml` | All RBAC permissions the operator needs. | 403 Forbidden errors from the K8s API. |
@@ -67,6 +74,7 @@ The operator uses Kopf decorators to register event handlers:
 | Annotation | On | Purpose |
 |-----------|-----|---------|
 | `bare-service-lb.prokube.ai/managed` | Service | Marks a Service as owned by this operator |
+| `bare-service-lb.prokube.ai/backend` | Service | Which backend is in use (`nginx` or `klipper`) |
 | `bare-service-lb.prokube.ai/reconciled` | Service | Set after full reconciliation; prevents re-processing loops |
 | `bare-service-lb.prokube.ai/external-ip` | Node | User/tool-provided external IP (overrides node status addresses) |
 | `bare-service-lb.prokube.ai/owner-uid` | ConfigMap, DaemonSet | Links managed resources back to the owning Service |
@@ -147,7 +155,7 @@ Service `.status.loadBalancer.ingress` only includes IPs of nodes where the Daem
 uv sync --dev           # or: pip install -e ".[dev]"
 
 # Run operator locally (requires kubeconfig)
-kopf run -m lb_operator --all-namespaces --verbose
+python3 -m lb_operator  # or: kopf run -m lb_operator --all-namespaces --verbose
 
 # Lint
 pylint lb_operator/
@@ -193,7 +201,10 @@ MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 FINALIZER = "bare-service-lb.prokube.ai/cleanup"
 EXTERNAL_IP_ANNOTATION = "bare-service-lb.prokube.ai/external-ip"
 RECONCILED_ANNOTATION = "bare-service-lb.prokube.ai/reconciled"
+BACKEND_ANNOTATION = "bare-service-lb.prokube.ai/backend"
 NGINX_IMAGE = "nginx:1.27-alpine"
+KLIPPER_IMAGE = os.environ.get("BSL_KLIPPER_IMAGE", "rancher/klipper-lb:v0.4.9")
+DEFAULT_BACKEND = os.environ.get("BSL_DEFAULT_BACKEND", "nginx")
 DAEMONSET_PREFIX = "bsl-"
 CONFIGMAP_PREFIX = "bsl-cfg-"
 NAMESPACE = "bare-service-lb"

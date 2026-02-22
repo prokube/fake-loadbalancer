@@ -12,7 +12,7 @@ Flow:
   2. Operator marks it as managed (keeps type as LoadBalancer)
   3. Operator creates proxy resources based on the selected backend:
        - nginx: ConfigMap with NGINX stream config + DaemonSet with hostPort
-       - klipper: DaemonSet with hostNetwork and iptables DNAT rules (no ConfigMap)
+       - klipper: DaemonSet with hostPort (klipper-lb image handles DNAT; no ConfigMap)
   4. Operator patches Service .status.loadBalancer.ingress with node IPs
   5. On delete, operator tears down the DaemonSet (+ ConfigMap if nginx)
 """
