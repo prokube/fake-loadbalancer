@@ -9,11 +9,11 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy operator source
-COPY lb_operator.py .
+COPY lb_operator/ lb_operator/
 RUN uv sync --frozen --no-dev
 
 # Run as non-root
 RUN groupadd --system appuser && useradd --system --gid appuser --create-home appuser
 USER appuser
 
-ENTRYPOINT ["uv", "run", "kopf", "run", "/app/lb_operator.py", "--all-namespaces", "--verbose", "--liveness=http://0.0.0.0:8080/healthz"]
+ENTRYPOINT ["uv", "run", "python3", "-m", "lb_operator"]

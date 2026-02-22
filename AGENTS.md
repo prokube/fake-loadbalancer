@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-**bare-service-lb** is a Kubernetes operator that provides `LoadBalancer`-type Service support on bare-metal clusters, cloud VMs, and anywhere without a native cloud load balancer. Inspired by k3s ServiceLB (klipper-lb), it deploys NGINX DaemonSets with `hostPort` to make services reachable on every node at the original port.
+**bare-service-lb** is a Kubernetes operator that provides `LoadBalancer`-type Service support on bare-metal clusters, cloud VMs, and anywhere without a native cloud load balancer. Inspired by k3s ServiceLB (klipper-lb), it deploys DaemonSets with `hostPort` to make services reachable on every node at the original port. Two proxy backends are supported: **nginx** (default, NGINX stream proxy with access logs) and **klipper** (klipper-lb image, iptables/nftables DNAT).
 
-**Language:** Python 3.11+ (single-file operator)
+**Language:** Python 3.11+
 **Framework:** [Kopf](https://kopf.readthedocs.io/) (Kubernetes Operator Pythonic Framework)
 **K8s client:** `kubernetes` Python SDK
 
@@ -13,10 +13,16 @@
 ```
 User creates Service type=LoadBalancer (port 80)
   → K8s auto-assigns NodePort (e.g. 30764)
+
+  [nginx backend — default]
   → Operator creates ConfigMap with NGINX stream config
   → Operator creates DaemonSet (NGINX with hostPort:80 → upstream 127.0.0.1:30764)
+
+  [klipper backend]
+  → Operator creates DaemonSet (klipper-lb with hostPort:80 → DNAT to NodePort 30764)
+
   → Operator patches Service .status.loadBalancer.ingress with node IPs
-  → On delete: tears down DaemonSet + ConfigMap
+  → On delete: tears down DaemonSet (+ ConfigMap if nginx)
 ```
 
 All operator-managed resources (DaemonSets, ConfigMaps) live in the `bare-service-lb` namespace.
@@ -25,9 +31,17 @@ All operator-managed resources (DaemonSets, ConfigMaps) live in the `bare-servic
 
 | Path | What it is | When to look here |
 |------|-----------|-------------------|
-| `lb_operator.py` | **The entire operator logic** (718 lines). All handlers, helpers, K8s interactions. | Any bug or feature — this is the only source file. |
-| `pyproject.toml` | Dependencies (`kopf`, `kubernetes`, `pyyaml`), dev tools (`ruff`, `mypy`, `pytest`). | Dependency issues, version constraints, lint/type config. |
-| `Dockerfile` | Multi-stage build using `uv`. Entrypoint runs `kopf run`. | Build failures, image issues. |
+| `lb_operator/` | **Operator package** — all operator logic split into focused modules. | Any bug or feature. |
+| `lb_operator/__init__.py` | Package entry point — imports `handlers` so Kopf discovers them. | Startup issues. |
+| `lb_operator/__main__.py` | `python3 -m lb_operator` entry point — calls `kopf.run()` with liveness endpoint. | Entrypoint / liveness issues. |
+| `lb_operator/constants.py` | Labels, annotations, image refs, prefixes, namespace. Namespace is resolved at startup via `_resolve_namespace()`. | Changing defaults. |
+| `lb_operator/utils.py` | Resource naming, node IP resolution, service status patching, namespace resolution (`_resolve_namespace()`). | Naming, IP selection, status issues. |
+| `lb_operator/backends/__init__.py` | Backend selection (`get_backend()`). | Adding a new backend. |
+| `lb_operator/backends/nginx.py` | NGINX config, ConfigMap, and DaemonSet builders. | NGINX-specific issues. |
+| `lb_operator/backends/klipper.py` | Klipper-lb DaemonSet builder (iptables DNAT). | Klipper-specific issues. |
+| `lb_operator/handlers.py` | Kopf event handlers: startup, service create/delete, node/pod watchers. | Handler logic, event flow. |
+| `pyproject.toml` | Dependencies (`kopf`, `kubernetes`, `pyyaml`), dev tools (`pyright`, `pylint`, `black`, `isort`, `pytest`). | Dependency issues, version constraints, lint/type config. |
+| `Dockerfile` | Multi-stage build using `uv`. Entrypoint runs `python3 -m lb_operator`. | Build failures, image issues. |
 | `helm/` | Helm chart for deployment (RBAC, Deployment, ServiceAccount, ClusterKopfPeering CRD). | RBAC permission errors, deployment config, leader election issues. |
 | `helm/values.yaml` | Default Helm values (image, replicas, resources, probes, env vars). | Runtime configuration questions. |
 | `helm/templates/clusterrole.yaml` | All RBAC permissions the operator needs. | 403 Forbidden errors from the K8s API. |
@@ -39,27 +53,28 @@ All operator-managed resources (DaemonSets, ConfigMaps) live in the `bare-servic
 
 ## Key Concepts
 
-### Single-File Operator
-All logic is in `lb_operator.py`. There are no models, no separate modules, no test files. When debugging, start (and likely finish) here.
+### Package Layout
+The operator is organized as the `lb_operator/` package. Handlers live in `handlers.py`, backend-specific builders in `backends/`, and shared utilities in `utils.py`. Constants are centralized in `constants.py`.
 
 ### Kopf Handler Decorators
 The operator uses Kopf decorators to register event handlers:
 
-- **`@kopf.on.create/update/resume("services", field="spec.type", value="LoadBalancer")`** → `handle_loadbalancer()` (line 408-572): Main reconciliation loop. Creates/updates ConfigMap + DaemonSet, patches Service status.
-- **`@kopf.on.delete("services", annotations={...})`** → `handle_delete()` (line 575-620): Cleanup on Service deletion.
-- **`@kopf.on.create/delete("nodes")`** → `handle_node_change()` (line 662-666): Refreshes all managed Service statuses when nodes change.
-- **`@kopf.on.event("pods", labels={...})`** → `handle_pod_event()` (line 674-717): Watches DaemonSet pods for readiness changes, updates Service status with accurate IPs.
-- **`@kopf.on.startup()`** → `configure()` (line 48-63): Sets operator settings including leader election.
+- **`@kopf.on.create/update/resume("services", field="spec.type", value="LoadBalancer")`** → `handle_loadbalancer()` in `handlers.py`: Main reconciliation loop. Creates/updates ConfigMap + DaemonSet, patches Service status.
+- **`@kopf.on.delete("services", annotations={...})`** → `handle_delete()` in `handlers.py`: Cleanup on Service deletion.
+- **`@kopf.on.create/delete("nodes")`** → `handle_node_change()` in `handlers.py`: Refreshes all managed Service statuses when nodes change.
+- **`@kopf.on.event("pods", labels={...})`** → `handle_pod_event()` in `handlers.py`: Watches DaemonSet pods for readiness changes, updates Service status with accurate IPs.
+- **`@kopf.on.startup()`** → `configure()` in `handlers.py`: Sets operator settings including leader election.
 
 ### Resource Naming Convention
 - DaemonSet: `bsl-<namespace>-<service-name>` (prefix: `DAEMONSET_PREFIX = "bsl-"`)
 - ConfigMap: `bsl-cfg-<namespace>-<service-name>` (prefix: `CONFIGMAP_PREFIX = "bsl-cfg-"`)
-- Long names are truncated with a SHA256 hash suffix via `_safe_name()` (line 71-93) to stay within the 63-char Kubernetes label limit.
+- Long names are truncated with a SHA256 hash suffix via `safe_name()` in `utils.py` to stay within the 63-char Kubernetes label limit.
 
 ### Annotations Used
 | Annotation | On | Purpose |
 |-----------|-----|---------|
 | `bare-service-lb.prokube.ai/managed` | Service | Marks a Service as owned by this operator |
+| `bare-service-lb.prokube.ai/backend` | Service | Which backend is in use (`nginx` or `klipper`) |
 | `bare-service-lb.prokube.ai/reconciled` | Service | Set after full reconciliation; prevents re-processing loops |
 | `bare-service-lb.prokube.ai/external-ip` | Node | User/tool-provided external IP (overrides node status addresses) |
 | `bare-service-lb.prokube.ai/owner-uid` | ConfigMap, DaemonSet | Links managed resources back to the owning Service |
@@ -75,21 +90,21 @@ The operator uses Kopf decorators to register event handlers:
 
 ### externalTrafficPolicy Handling
 - **`Cluster` (default):** NGINX upstream targets `127.0.0.1:<NodePort>` (works on every node).
-- **`Local`:** NGINX upstream targets `<ClusterIP>:<port>` instead, because NodePort only listens on nodes with a local endpoint. This logic is in `handle_loadbalancer()` around line 466-480.
+- **`Local`:** NGINX upstream targets `<ClusterIP>:<port>` instead, because NodePort only listens on nodes with a local endpoint. This logic is in `handle_loadbalancer()` in `handlers.py`.
 
 ### Status Reporting (IP Selection)
-Service `.status.loadBalancer.ingress` only includes IPs of nodes where the DaemonSet pod is **Running and Ready** (`_get_ready_node_ips()`, line 333-371). This means:
+Service `.status.loadBalancer.ingress` only includes IPs of nodes where the DaemonSet pod is **Running and Ready** (`get_ready_node_ips()` in `utils.py`). This means:
 - Port conflicts cause pods to fail → those node IPs are excluded → visible to user.
 - Freshly created DaemonSets show empty EXTERNAL-IP until pods start → `handle_pod_event()` patches status once pods become Ready.
 
-### Node IP Resolution Order (`_get_node_ip()`, line 294-318)
+### Node IP Resolution Order (`get_node_ip()` in `utils.py`)
 1. `bare-service-lb.prokube.ai/external-ip` annotation (user/tool provided)
 2. `ExternalIP` from node status
 3. `InternalIP` from node status
 
 ### Leader Election / HA
 - Uses Kopf's built-in peering mechanism via `ClusterKopfPeering` CRD.
-- Configured in `configure()` (line 57-63) and deployed via `helm/templates/peering.yaml`.
+- Configured in `configure()` in `handlers.py` and deployed via `helm/templates/peering.yaml`.
 - Lease name configurable via `LEADER_ELECTION_LEASE_NAME` env var (default: `bare-service-lb-leader`).
 - `settings.peering.mandatory = True` means the operator **will not run** if peering is unavailable.
 
@@ -100,21 +115,21 @@ Service `.status.loadBalancer.ingress` only includes IPs of nodes where the Daem
 2. If pods are in CrashLoopBackOff or Pending, check for **port conflicts** (another process or DaemonSet using the same hostPort).
 3. Check the operator logs: `kubectl -n bare-service-lb logs deploy/bare-service-lb`
 4. Look for the `reconciled` annotation on the Service — if missing, the handler may have failed partway through.
-5. Code path: `handle_loadbalancer()` → `_get_ready_node_ips()` → `_patch_service_status()`
+5. Code path: `handle_loadbalancer()` → `get_ready_node_ips()` → `patch_service_status()`
 
 ### "Service shows wrong IPs"
-- Check node IP resolution: `_get_node_ip()` (line 294). Annotation overrides status.
+- Check node IP resolution: `get_node_ip()` in `utils.py`. Annotation overrides status.
 - For GCP: check if `gcp-external-ip-annotator` DaemonSet is running and annotations exist on nodes.
 - Status is only refreshed on pod events (`handle_pod_event()`) or node create/delete (`handle_node_change()`). Node IP changes (without add/remove) won't auto-update.
 
 ### "Operator keeps re-processing the same Service"
-- The `RECONCILED_ANNOTATION` (`bare-service-lb.prokube.ai/reconciled`) gates the skip check at the top of `handle_loadbalancer()` (line 432-434).
-- If reconciliation fails before reaching the annotation-set step (line 559-563), it will retry — this is by design.
+- The `RECONCILED_ANNOTATION` (`bare-service-lb.prokube.ai/reconciled`) gates the skip check at the top of `handle_loadbalancer()` in `handlers.py`.
+- If reconciliation fails before reaching the annotation-set step, it will retry — this is by design.
 - Kopf also stores handler state in annotations (prefix `bare-service-lb.prokube.ai`), which can trigger update events. This is the standard Kopf pattern.
 
 ### "RBAC / 403 Forbidden errors"
 - All required permissions are in `helm/templates/clusterrole.yaml`.
-- The operator needs: services (get/list/watch/patch/update), services/status (patch/update), nodes (get/list/watch/patch), configmaps + daemonsets (full CRUD), events, leases, namespaces (get/create), CRDs (get/list/watch).
+- The operator needs: services (get/list/watch/patch/update), services/status (patch/update), nodes (get/list/watch/patch), configmaps + daemonsets (full CRUD), events, leases, namespaces (get/list/watch), CRDs (get/list/watch).
 - Kopf patches nodes for its internal handler annotations, so `patch` on nodes is required.
 
 ### "Leader election not working"
@@ -124,12 +139,12 @@ Service `.status.loadBalancer.ingress` only includes IPs of nodes where the Daem
 - Inspect: `kubectl get clusterkopfpeering bare-service-lb-leader -o yaml`
 
 ### "DaemonSet or ConfigMap not being cleaned up"
-- Cleanup handler (`handle_delete()`, line 575) fires on Service deletion for services with the `managed=true` annotation.
+- Cleanup handler (`handle_delete()` in `handlers.py`) fires on Service deletion for services with the `managed=true` annotation.
 - The Kopf finalizer (`bare-service-lb.prokube.ai/cleanup`) must be present on the Service for cleanup to run.
 - If the finalizer was removed manually, cleanup won't happen. Delete orphaned resources manually from the `bare-service-lb` namespace.
 
 ### "NGINX config issues"
-- ConfigMap holds two keys: `stream.conf` (generated by `_build_nginx_config()`, line 96) and `nginx.conf` (static main config, line 498-508).
+- ConfigMap holds two keys: `stream.conf` (generated by `build_nginx_config()` in `backends/nginx.py`) and `nginx.conf` (static main config in `handlers.py`).
 - The NGINX container mounts both via `subPath`. Changes to the ConfigMap require a pod restart (no config reload mechanism).
 - UDP ports use `listen <port> udp;` with `proxy_timeout 3s; proxy_responses 1;`.
 
@@ -140,16 +155,17 @@ Service `.status.loadBalancer.ingress` only includes IPs of nodes where the Daem
 uv sync --dev           # or: pip install -e ".[dev]"
 
 # Run operator locally (requires kubeconfig)
-kopf run lb_operator.py --all-namespaces --verbose
+python3 -m lb_operator  # or: kopf run -m lb_operator --all-namespaces --verbose
 
 # Lint
-ruff check lb_operator.py
+pylint lb_operator/
 
 # Type check
-mypy lb_operator.py
+pyright lb_operator/
 
 # Format
-ruff format lb_operator.py
+black lb_operator/
+isort --profile black lb_operator/
 
 # Build container image
 docker build -t bare-service-lb:latest .
@@ -169,7 +185,7 @@ helm install bare-service-lb ./helm --namespace bare-service-lb --create-namespa
 | `kubernetes` | >=31, <33 | Official Kubernetes Python client |
 | `pyyaml` | >=6, <7 | YAML parsing (kopf dependency) |
 
-Dev-only: `pytest`, `pytest-asyncio`, `ruff`, `mypy`
+Dev-only: `pytest`, `pytest-asyncio`, `pyright`, `pylint`, `black`, `isort`
 
 ## CI/CD
 
@@ -177,7 +193,7 @@ Dev-only: `pytest`, `pytest-asyncio`, `ruff`, `mypy`
 - `.github/workflows/bare-service-lb-dev.yaml` — Dev image builds (likely on branches/PRs).
 - `.github/workflows/helm-push-main.yaml` / `helm-push-dev.yaml` — Helm chart OCI push to GHCR.
 
-## Important Constants (lb_operator.py, lines 34-42)
+## Important Constants (`lb_operator/constants.py`)
 
 ```python
 OPERATOR_LABEL = "bare-service-lb.prokube.ai/managed"
@@ -185,8 +201,15 @@ MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 FINALIZER = "bare-service-lb.prokube.ai/cleanup"
 EXTERNAL_IP_ANNOTATION = "bare-service-lb.prokube.ai/external-ip"
 RECONCILED_ANNOTATION = "bare-service-lb.prokube.ai/reconciled"
+BACKEND_ANNOTATION = "bare-service-lb.prokube.ai/backend"
 NGINX_IMAGE = "nginx:1.27-alpine"
+KLIPPER_IMAGE = os.environ.get("BSL_KLIPPER_IMAGE", "rancher/klipper-lb:v0.4.9")
+DEFAULT_BACKEND = os.environ.get("BSL_DEFAULT_BACKEND", "nginx")
 DAEMONSET_PREFIX = "bsl-"
 CONFIGMAP_PREFIX = "bsl-cfg-"
-NAMESPACE = "bare-service-lb"
+# Resolved at startup by _resolve_namespace():
+#   1. /var/run/secrets/kubernetes.io/serviceaccount/namespace  (in-cluster, always used)
+#   2. BSL_NAMESPACE env var  (local dev/testing only — SA file takes precedence in-cluster)
+#   Raises RuntimeError if neither is available.
+NAMESPACE = _resolve_namespace()
 ```
