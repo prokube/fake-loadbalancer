@@ -74,43 +74,39 @@ def safe_name(namespace: str, name: str) -> str:
     return f"{truncated}-{suffix}"
 
 
-def get_node_ip(node: k8s.V1Node) -> str | None:
-    """Return the best available IP address for a single node.
+def get_node_ips(node: k8s.V1Node) -> list[str]:
+    """Return all available IP addresses for a single node.
 
     Resolution order:
-      1. ``bare-service-lb.prokube.ai/external-ip`` annotation (user/tool provided)
-      2. ``ExternalIP`` from node status addresses
-      3. ``InternalIP`` from node status addresses
+      1. ``bare-service-lb.prokube.ai/external-ip`` annotation (user/tool
+         provided).  Supports comma-separated values for nodes reachable at
+         multiple addresses.  When this annotation is set, node status
+         addresses are **not** consulted — the annotation is an explicit
+         override.
+      2. All ``ExternalIP`` addresses from node status, followed by all
+         ``InternalIP`` addresses.
+
+    Note: The IPs reported here depend on the node's kubelet configuration.
+    For multi-homed nodes, ensure the kubelet advertises all desired
+    addresses (e.g. via ``--node-ip``).
     """
     # 1. Check for operator annotation (set by external tooling)
     annotations = (node.metadata.annotations or {}) if node.metadata else {}
     annotated_ip = annotations.get(EXTERNAL_IP_ANNOTATION)
     if annotated_ip:
-        return annotated_ip
+        return [ip.strip() for ip in annotated_ip.split(",") if ip.strip()]
 
-    # 2. Fall back to node status addresses
+    # 2. Fall back to node status addresses — collect all of them
     if not (node.status and node.status.addresses):
-        return None
-    external = None
-    internal = None
+        return []
+    external: list[str] = []
+    internal: list[str] = []
     for addr in node.status.addresses:
         if addr.type == "ExternalIP":
-            external = addr.address
+            external.append(addr.address)
         elif addr.type == "InternalIP":
-            internal = addr.address
-    return external or internal
-
-
-def get_node_ips() -> list[str]:
-    """Return the best available IP address for each node."""
-    v1 = k8s.CoreV1Api()
-    nodes = v1.list_node()
-    ips: list[str] = []
-    for node in nodes.items:
-        ip = get_node_ip(node)
-        if ip:
-            ips.append(ip)
-    return sorted(ips)
+            internal.append(addr.address)
+    return external + internal
 
 
 def get_ready_node_ips(ds_name: str) -> list[str]:
@@ -148,9 +144,7 @@ def get_ready_node_ips(ds_name: str) -> list[str]:
     for node in nodes.items:
         if node.metadata.name not in ready_node_names:
             continue
-        ip = get_node_ip(node)
-        if ip:
-            ips.append(ip)
+        ips.extend(get_node_ips(node))
     return sorted(ips)
 
 

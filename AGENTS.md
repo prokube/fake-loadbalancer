@@ -97,10 +97,12 @@ Service `.status.loadBalancer.ingress` only includes IPs of nodes where the Daem
 - Port conflicts cause pods to fail → those node IPs are excluded → visible to user.
 - Freshly created DaemonSets show empty EXTERNAL-IP until pods start → `handle_pod_event()` patches status once pods become Ready.
 
-### Node IP Resolution Order (`get_node_ip()` in `utils.py`)
-1. `bare-service-lb.prokube.ai/external-ip` annotation (user/tool provided)
-2. `ExternalIP` from node status
-3. `InternalIP` from node status
+### Node IP Resolution Order (`get_node_ips()` in `utils.py`)
+1. `bare-service-lb.prokube.ai/external-ip` annotation (user/tool provided) — supports comma-separated values for multi-IP nodes
+2. All `ExternalIP` addresses from node status
+3. All `InternalIP` addresses from node status
+
+All matching IPs are returned (not just one). The IPs reported depend on the node's kubelet configuration. For multi-homed nodes, ensure the kubelet advertises all desired addresses (e.g. via `--node-ip` in MicroK8s: `/var/snap/microk8s/current/args/kubelet`).
 
 ### Leader Election / HA
 - Uses Kopf's built-in peering mechanism via `ClusterKopfPeering` CRD.
@@ -118,7 +120,8 @@ Service `.status.loadBalancer.ingress` only includes IPs of nodes where the Daem
 5. Code path: `handle_loadbalancer()` → `get_ready_node_ips()` → `patch_service_status()`
 
 ### "Service shows wrong IPs"
-- Check node IP resolution: `get_node_ip()` in `utils.py`. Annotation overrides status.
+- Check node IP resolution: `get_node_ips()` in `utils.py`. Annotation overrides status.
+- The operator reports all IPs from `node.status.addresses` (both `ExternalIP` and `InternalIP`). If a node has multiple interfaces but only one IP appears, the kubelet is likely only advertising one address. Configure `--node-ip` at the distro level to expose additional addresses.
 - For GCP: check if `gcp-external-ip-annotator` DaemonSet is running and annotations exist on nodes.
 - Status is only refreshed on pod events (`handle_pod_event()`) or node create/delete (`handle_node_change()`). Node IP changes (without add/remove) won't auto-update.
 
