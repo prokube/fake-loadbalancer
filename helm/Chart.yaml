@@ -3,4 +3,4 @@ name: bare-service-lb
 description: ServiceLB for bare-metal, cloud VMs, and anywhere without a cloud LoadBalancer
 type: application
 version: 0.2.1
-appVersion: "0.2.0"
+appVersion: "0.2.1"
