@@ -152,7 +152,7 @@ bare-service-lb supports two proxy backends:
 | Backend | Image | How it works | Best for |
 |---------|-------|--------------|----------|
 | `nginx` (default) | `nginx:1.27-alpine` | NGINX stream proxy with `hostPort` | Observability (access logs) |
-| `klipper` | `rancher/klipper-lb` | iptables DNAT with `hostNetwork` | Performance (kernel-level NAT) |
+| `klipper` | `rancher/klipper-lb` | iptables DNAT with `hostPort` | Performance (kernel-level NAT) |
 
 ### Global default
 
@@ -203,7 +203,7 @@ When you delete the Service, the operator automatically deletes the associated D
 | Component | Namespace | Purpose |
 |-----------|-----------|---------|
 | Operator Deployment | `bare-service-lb` | Watches services, manages lifecycle |
-| Proxy DaemonSet (per service) | `bare-service-lb` | NGINX with `hostPort` or klipper-lb with `hostNetwork` |
+| Proxy DaemonSet (per service) | `bare-service-lb` | NGINX or klipper-lb with `hostPort` |
 | ConfigMap (per service, nginx only) | `bare-service-lb` | Holds NGINX `stream {}` config |
 | ClusterKopfPeering | cluster-wide | Coordinates leader election between operator replicas |
 
