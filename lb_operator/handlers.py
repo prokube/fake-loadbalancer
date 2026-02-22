@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import textwrap
 from typing import Any
 
@@ -46,8 +47,11 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     )
 
     # Enable leader election for high availability
-    # Multiple operator replicas can run, but only one will be active
+    # Multiple operator replicas can run, but only one will be active.
+    # A random priority ensures that when replicas have different priorities,
+    # exactly one becomes active; equal priorities cause all to freeze.
     settings.peering.standalone = False
+    settings.peering.priority = random.randint(0, 32767)
     settings.peering.name = os.environ.get(
         "LEADER_ELECTION_LEASE_NAME", "bare-service-lb-leader"
     )
