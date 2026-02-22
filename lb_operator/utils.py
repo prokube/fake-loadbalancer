@@ -1,21 +1,52 @@
-"""Helpers: resource naming, node IP resolution, service status patching, namespace management."""
+"""Helpers: resource naming, node IP resolution, service status patching, namespace resolution."""
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from typing import Any
 
-import kubernetes
 from kubernetes import client as k8s
 
-from .constants import (
-    EXTERNAL_IP_ANNOTATION,
-    MANAGED_BY_LABEL,
-    NAMESPACE,
-)
+from .constants import EXTERNAL_IP_ANNOTATION
 
 logger = logging.getLogger("bare-service-lb")
+
+
+def _resolve_namespace() -> str:
+    """Resolve the namespace where the operator should deploy its resources.
+
+    Resolution order:
+      1. /var/run/secrets/kubernetes.io/serviceaccount/namespace — injected by
+         the kubelet into every pod; always correct when running in-cluster.
+      2. BSL_NAMESPACE env var — primarily for local development/testing, where
+         the serviceaccount file is not present.
+
+    Raises RuntimeError if neither source is available.
+    """
+    try:
+        with open(
+            "/var/run/secrets/kubernetes.io/serviceaccount/namespace", encoding="utf-8"
+        ) as _f:
+            return _f.read().strip()
+    except OSError:
+        pass
+
+    # Env var is mostly used for local testing — in-cluster the SA file
+    # takes precedence and this branch is never reached.
+    ns = os.environ.get("BSL_NAMESPACE")
+    if ns:
+        return ns
+
+    raise RuntimeError(
+        "Cannot determine operator namespace: "
+        "/var/run/secrets/kubernetes.io/serviceaccount/namespace not found "
+        "and BSL_NAMESPACE env var is not set."
+    )
+
+
+NAMESPACE: str = _resolve_namespace()
 
 
 def safe_name(namespace: str, name: str) -> str:
@@ -130,23 +161,3 @@ def patch_service_status(namespace: str, name: str, ips: list[str]) -> None:
     body: dict[str, Any] = {"status": {"loadBalancer": {"ingress": ingress}}}
     v1.patch_namespaced_service_status(name, namespace, body)
     logger.info("Patched status on %s/%s with IPs: %s", namespace, name, ips)
-
-
-def ensure_namespace() -> None:
-    """Create the operator namespace if it doesn't exist."""
-    v1 = k8s.CoreV1Api()
-    try:
-        v1.read_namespace(NAMESPACE)
-    except kubernetes.client.exceptions.ApiException as exc:
-        if exc.status == 404:
-            v1.create_namespace(
-                k8s.V1Namespace(
-                    metadata=k8s.V1ObjectMeta(
-                        name=NAMESPACE,
-                        labels={MANAGED_BY_LABEL: "bare-service-lb"},
-                    )
-                )
-            )
-            logger.info("Created namespace %s", NAMESPACE)
-        else:
-            raise

@@ -17,4 +17,3 @@ DEFAULT_BACKEND = os.environ.get("BSL_DEFAULT_BACKEND", "nginx")
 
 DAEMONSET_PREFIX = "bsl-"
 CONFIGMAP_PREFIX = "bsl-cfg-"
-NAMESPACE = "bare-service-lb"  # namespace where DaemonSets/ConfigMaps live

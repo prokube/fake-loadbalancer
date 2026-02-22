@@ -18,12 +18,11 @@ from .constants import (
     CONFIGMAP_PREFIX,
     DAEMONSET_PREFIX,
     FINALIZER,
-    NAMESPACE,
     OPERATOR_LABEL,
     RECONCILED_ANNOTATION,
 )
 from .utils import (
-    ensure_namespace,
+    NAMESPACE,
     get_ready_node_ips,
     patch_service_status,
 )
@@ -49,7 +48,9 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     # Enable leader election for high availability
     # Multiple operator replicas can run, but only one will be active
     settings.peering.standalone = False
-    settings.peering.name = os.environ.get("LEADER_ELECTION_LEASE_NAME", "bare-service-lb-leader")
+    settings.peering.name = os.environ.get(
+        "LEADER_ELECTION_LEASE_NAME", "bare-service-lb-leader"
+    )
     settings.peering.mandatory = True
 
 
@@ -144,8 +145,6 @@ async def handle_loadbalancer(
     # ------------------------------------------------------------------
     # 4. Determine backend and create proxy resources
     # ------------------------------------------------------------------
-    ensure_namespace()
-
     backend = get_backend(annotations)
     cm_name = CONFIGMAP_PREFIX + safe_name(namespace, name)
 

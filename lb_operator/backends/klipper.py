@@ -10,10 +10,9 @@ from ..constants import (
     DAEMONSET_PREFIX,
     KLIPPER_IMAGE,
     MANAGED_BY_LABEL,
-    NAMESPACE,
     OPERATOR_LABEL,
 )
-from ..utils import safe_name
+from ..utils import NAMESPACE, safe_name
 
 
 def build_daemonset(

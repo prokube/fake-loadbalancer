@@ -11,11 +11,10 @@ from ..constants import (
     CONFIGMAP_PREFIX,
     DAEMONSET_PREFIX,
     MANAGED_BY_LABEL,
-    NAMESPACE,
     NGINX_IMAGE,
     OPERATOR_LABEL,
 )
-from ..utils import safe_name
+from ..utils import NAMESPACE, safe_name
 
 
 def build_nginx_config(ports: list[dict[str, Any]]) -> str:
@@ -35,7 +34,8 @@ def build_nginx_config(ports: list[dict[str, Any]]) -> str:
         protocol = p.get("protocol", "TCP").upper()
 
         if protocol == "UDP":
-            blocks.append(textwrap.dedent(f"""\
+            blocks.append(
+                textwrap.dedent(f"""\
                 upstream upstream_{host_port}_udp {{
                     server {upstream_target};
                 }}
@@ -45,9 +45,11 @@ def build_nginx_config(ports: list[dict[str, Any]]) -> str:
                     proxy_timeout 3s;
                     proxy_responses 1;
                 }}
-            """))
+            """)
+            )
         else:
-            blocks.append(textwrap.dedent(f"""\
+            blocks.append(
+                textwrap.dedent(f"""\
                 upstream upstream_{host_port} {{
                     server {upstream_target};
                 }}
@@ -55,7 +57,8 @@ def build_nginx_config(ports: list[dict[str, Any]]) -> str:
                     listen {host_port};
                     proxy_pass upstream_{host_port};
                 }}
-            """))
+            """)
+            )
 
     inner = textwrap.indent("".join(blocks), "    ")
     return f"stream {{\n{inner}}}\n"

@@ -34,8 +34,8 @@ All operator-managed resources (DaemonSets, ConfigMaps) live in the `bare-servic
 | `lb_operator/` | **Operator package** — all operator logic split into focused modules. | Any bug or feature. |
 | `lb_operator/__init__.py` | Package entry point — imports `handlers` so Kopf discovers them. | Startup issues. |
 | `lb_operator/__main__.py` | `python3 -m lb_operator` entry point — calls `kopf.run()` with liveness endpoint. | Entrypoint / liveness issues. |
-| `lb_operator/constants.py` | Labels, annotations, image refs, prefixes, namespace. | Changing defaults. |
-| `lb_operator/utils.py` | Resource naming, node IP resolution, service status patching, namespace management. | Naming, IP selection, status issues. |
+| `lb_operator/constants.py` | Labels, annotations, image refs, prefixes, namespace. Namespace is resolved at startup via `_resolve_namespace()`. | Changing defaults. |
+| `lb_operator/utils.py` | Resource naming, node IP resolution, service status patching, namespace resolution (`_resolve_namespace()`). | Naming, IP selection, status issues. |
 | `lb_operator/backends/__init__.py` | Backend selection (`get_backend()`). | Adding a new backend. |
 | `lb_operator/backends/nginx.py` | NGINX config, ConfigMap, and DaemonSet builders. | NGINX-specific issues. |
 | `lb_operator/backends/klipper.py` | Klipper-lb DaemonSet builder (iptables DNAT). | Klipper-specific issues. |
@@ -129,7 +129,7 @@ Service `.status.loadBalancer.ingress` only includes IPs of nodes where the Daem
 
 ### "RBAC / 403 Forbidden errors"
 - All required permissions are in `helm/templates/clusterrole.yaml`.
-- The operator needs: services (get/list/watch/patch/update), services/status (patch/update), nodes (get/list/watch/patch), configmaps + daemonsets (full CRUD), events, leases, namespaces (get/create), CRDs (get/list/watch).
+- The operator needs: services (get/list/watch/patch/update), services/status (patch/update), nodes (get/list/watch/patch), configmaps + daemonsets (full CRUD), events, leases, namespaces (get/list/watch), CRDs (get/list/watch).
 - Kopf patches nodes for its internal handler annotations, so `patch` on nodes is required.
 
 ### "Leader election not working"
@@ -207,5 +207,9 @@ KLIPPER_IMAGE = os.environ.get("BSL_KLIPPER_IMAGE", "rancher/klipper-lb:v0.4.9")
 DEFAULT_BACKEND = os.environ.get("BSL_DEFAULT_BACKEND", "nginx")
 DAEMONSET_PREFIX = "bsl-"
 CONFIGMAP_PREFIX = "bsl-cfg-"
-NAMESPACE = "bare-service-lb"
+# Resolved at startup by _resolve_namespace():
+#   1. /var/run/secrets/kubernetes.io/serviceaccount/namespace  (in-cluster, always used)
+#   2. BSL_NAMESPACE env var  (local dev/testing only — SA file takes precedence in-cluster)
+#   Raises RuntimeError if neither is available.
+NAMESPACE = _resolve_namespace()
 ```
