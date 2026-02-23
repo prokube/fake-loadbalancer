@@ -6,6 +6,7 @@ MANAGED_ANNOTATION = "bare-service-lb.prokube.ai/managed"
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 FINALIZER = "bare-service-lb.prokube.ai/cleanup"
 EXTERNAL_IP_ANNOTATION = "bare-service-lb.prokube.ai/external-ip"
+PROXY_PROTOCOL_ANNOTATION = "bare-service-lb.prokube.ai/proxy-protocol"
 
 NGINX_IMAGE = "nginx:1.27-alpine"
 

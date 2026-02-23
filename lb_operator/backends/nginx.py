@@ -11,12 +11,11 @@ from kubernetes.client.rest import ApiException
 from ..constants import (
     CONFIGMAP_PREFIX,
     DAEMONSET_PREFIX,
+    MANAGED_ANNOTATION,
     MANAGED_BY_LABEL,
     NGINX_IMAGE,
-    MANAGED_ANNOTATION,
 )
 from ..utils import NAMESPACE, safe_name
-
 
 # Top-level nginx.conf that includes the stream block
 NGINX_CONF = textwrap.dedent("""\
@@ -32,7 +31,10 @@ NGINX_CONF = textwrap.dedent("""\
 """)
 
 
-def build_nginx_stream_config(ports: list[dict[str, Any]]) -> str:
+def build_nginx_stream_config(
+    ports: list[dict[str, Any]],
+    proxy_protocol: bool = False,
+) -> str:
     """Build an NGINX stream config that proxies hostPort -> backend.
 
     The upstream target is chosen based on the ``upstream`` key in each port
@@ -41,6 +43,11 @@ def build_nginx_stream_config(ports: list[dict[str, Any]]) -> str:
         ``externalTrafficPolicy: Local`` (NodePort only listens on nodes
         with a local endpoint, so 127.0.0.1 would fail on other nodes).
       - ``127.0.0.1:<NodePort>`` for the default ``Cluster`` policy.
+
+    When *proxy_protocol* is ``True``, TCP server blocks include
+    ``proxy_protocol on;`` so NGINX prepends a PROXY protocol v1 header.
+    The upstream (e.g. Istio/Envoy, HAProxy) must be configured to accept
+    Proxy Protocol.  UDP blocks are unaffected (Proxy Protocol is TCP-only).
     """
     blocks: list[str] = []
     for p in ports:
@@ -49,8 +56,7 @@ def build_nginx_stream_config(ports: list[dict[str, Any]]) -> str:
         protocol = p.get("protocol", "TCP").upper()
 
         if protocol == "UDP":
-            blocks.append(
-                textwrap.dedent(f"""\
+            blocks.append(textwrap.dedent(f"""\
                 upstream upstream_{host_port}_udp {{
                     server {upstream_target};
                 }}
@@ -60,20 +66,17 @@ def build_nginx_stream_config(ports: list[dict[str, Any]]) -> str:
                     proxy_timeout 3s;
                     proxy_responses 1;
                 }}
-            """)
-            )
+            """))
         else:
-            blocks.append(
-                textwrap.dedent(f"""\
+            extra = "    proxy_protocol on;\n" if proxy_protocol else ""
+            blocks.append(textwrap.dedent(f"""\
                 upstream upstream_{host_port} {{
                     server {upstream_target};
                 }}
                 server {{
                     listen {host_port};
                     proxy_pass upstream_{host_port};
-                }}
-            """)
-            )
+                """) + extra + "}\n")
 
     inner = textwrap.indent("".join(blocks), "    ")
     return f"stream {{\n{inner}}}\n"
@@ -241,10 +244,14 @@ def ensure_backend(
     svc_name: str,
     ports: list[dict[str, Any]],
     owner_uid: str,
+    proxy_protocol: bool = False,
 ) -> str:
     """Ensure the NGINX backend resources exist and are up to date for the given service."""
     cm = build_configmap(
-        svc_namespace, svc_name, build_nginx_stream_config(ports), owner_uid
+        svc_namespace,
+        svc_name,
+        build_nginx_stream_config(ports, proxy_protocol=proxy_protocol),
+        owner_uid,
     )
     ds = build_daemonset(svc_namespace, svc_name, ports, owner_uid)
     cm_name, cm_namespace = (

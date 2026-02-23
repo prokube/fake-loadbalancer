@@ -158,6 +158,33 @@ spec:
       protocol: UDP
 ```
 
+## Proxy Protocol (Source IP Preservation)
+
+By default, NGINX proxies traffic by opening a new connection to the upstream, so the backend sees the node's IP instead of the real client IP. If your upstream supports [Proxy Protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) (e.g. Istio/Envoy, HAProxy, NGINX), you can opt in to have NGINX prepend a Proxy Protocol v1 header containing the original client IP:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app
+  annotations:
+    bare-service-lb.prokube.ai/proxy-protocol: "true"
+spec:
+  type: LoadBalancer
+  selector:
+    app: my-app
+  ports:
+    - port: 80
+      targetPort: 8080
+```
+
+**How it works:** NGINX adds `proxy_protocol on;` to TCP stream server blocks. The upstream reads the PROXY header to recover the real client IP. kube-proxy passes the header through transparently (it only rewrites IP/TCP headers, never inspects the TCP payload).
+
+**Important:**
+* Only applies to **TCP** ports. UDP has no Proxy Protocol equivalent.
+* The upstream **must** be configured to accept Proxy Protocol, otherwise it will see the header as garbage bytes and break.
+* For Istio ingress-gateway, enable Proxy Protocol with an `EnvoyFilter` or Gateway API configuration.
+
 ## How Cleanup Works
 
 When you delete the Service, the operator automatically deletes the associated DaemonSet and ConfigMap.

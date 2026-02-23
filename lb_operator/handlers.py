@@ -16,6 +16,7 @@ from .constants import (
     DAEMONSET_PREFIX,
     FINALIZER,
     MANAGED_ANNOTATION,
+    PROXY_PROTOCOL_ANNOTATION,
 )
 from .utils import (
     NAMESPACE,
@@ -109,10 +110,14 @@ async def handle_loadbalancer_create(
     svc_ports: list[k8s.V1ServicePort] = getattr(svc.spec, "ports", [])
     cluster_ip: str = getattr(svc.spec, "cluster_ip", "")
     etp: str = getattr(svc.spec, "external_traffic_policy", "Cluster")
+    annotations = getattr(svc.metadata, "annotations", {}) or {}
+    proxy_protocol = annotations.get(PROXY_PROTOCOL_ANNOTATION) == "true"
 
     ports = _build_port_mapping(svc_ports, cluster_ip, use_cluster_ip=etp == "Local")
 
-    ds_name = nginx_backend.ensure_backend(namespace, name, ports, uid)
+    ds_name = nginx_backend.ensure_backend(
+        namespace, name, ports, uid, proxy_protocol=proxy_protocol
+    )
     ready_ips = get_ready_node_ips(ds_name)
     patch_service_status(namespace, name, ready_ips)
 

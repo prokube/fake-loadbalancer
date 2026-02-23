@@ -66,6 +66,7 @@ The operator uses Kopf decorators to register event handlers:
 |-----------|-----|---------|
 | `bare-service-lb.prokube.ai/managed` | Service | Marks a Service as owned by this operator |
 | `bare-service-lb.prokube.ai/external-ip` | Node | User/tool-provided external IP (overrides node status addresses) |
+| `bare-service-lb.prokube.ai/proxy-protocol` | Service | Set to `"true"` to enable Proxy Protocol v1 on TCP ports (upstream must support it) |
 | `bare-service-lb.prokube.ai/owner-uid` | ConfigMap, DaemonSet | Links managed resources back to the owning Service |
 
 ### Labels Used
@@ -186,6 +187,7 @@ MANAGED_ANNOTATION = "bare-service-lb.prokube.ai/managed"
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 FINALIZER = "bare-service-lb.prokube.ai/cleanup"
 EXTERNAL_IP_ANNOTATION = "bare-service-lb.prokube.ai/external-ip"
+PROXY_PROTOCOL_ANNOTATION = "bare-service-lb.prokube.ai/proxy-protocol"
 NGINX_IMAGE = "nginx:1.27-alpine"
 DAEMONSET_PREFIX = "bsl-"
 CONFIGMAP_PREFIX = "bsl-cfg-"
