@@ -6,18 +6,33 @@ import textwrap
 from typing import Any
 
 from kubernetes import client as k8s
+from kubernetes.client.rest import ApiException
 
 from ..constants import (
     CONFIGMAP_PREFIX,
     DAEMONSET_PREFIX,
     MANAGED_BY_LABEL,
     NGINX_IMAGE,
-    OPERATOR_LABEL,
+    MANAGED_ANNOTATION,
 )
 from ..utils import NAMESPACE, safe_name
 
 
-def build_nginx_config(ports: list[dict[str, Any]]) -> str:
+# Top-level nginx.conf that includes the stream block
+NGINX_CONF = textwrap.dedent("""\
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /tmp/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    include /etc/nginx/stream.conf;
+""")
+
+
+def build_nginx_stream_config(ports: list[dict[str, Any]]) -> str:
     """Build an NGINX stream config that proxies hostPort -> backend.
 
     The upstream target is chosen based on the ``upstream`` key in each port
@@ -67,7 +82,7 @@ def build_nginx_config(ports: list[dict[str, Any]]) -> str:
 def build_configmap(
     svc_namespace: str,
     svc_name: str,
-    nginx_conf: str,
+    stream_conf: str,
     owner_uid: str,
 ) -> k8s.V1ConfigMap:
     """Build the ConfigMap that holds the NGINX stream config."""
@@ -77,7 +92,7 @@ def build_configmap(
             name=cm_name,
             namespace=NAMESPACE,
             labels={
-                OPERATOR_LABEL: "true",
+                MANAGED_ANNOTATION: "true",
                 MANAGED_BY_LABEL: "bare-service-lb",
                 "bare-service-lb.prokube.ai/service-namespace": svc_namespace,
                 "bare-service-lb.prokube.ai/service-name": svc_name,
@@ -87,7 +102,8 @@ def build_configmap(
             },
         ),
         data={
-            "stream.conf": nginx_conf,
+            "stream.conf": stream_conf,
+            "nginx.conf": NGINX_CONF,
         },
     )
 
@@ -119,7 +135,7 @@ def build_daemonset(
             name=ds_name,
             namespace=NAMESPACE,
             labels={
-                OPERATOR_LABEL: "true",
+                MANAGED_ANNOTATION: "true",
                 MANAGED_BY_LABEL: "bare-service-lb",
                 "bare-service-lb.prokube.ai/service-namespace": svc_namespace,
                 "bare-service-lb.prokube.ai/service-name": svc_name,
@@ -138,7 +154,7 @@ def build_daemonset(
                 metadata=k8s.V1ObjectMeta(
                     labels={
                         "bare-service-lb.prokube.ai/daemonset": ds_name,
-                        OPERATOR_LABEL: "true",
+                        MANAGED_ANNOTATION: "true",
                     },
                 ),
                 spec=k8s.V1PodSpec(
@@ -155,8 +171,13 @@ def build_daemonset(
                             effect="NoSchedule",
                         ),
                     ],
-                    # Use host network: false — we rely on hostPort instead
-                    host_network=False,
+                    # Use host network so NGINX can reach 127.0.0.1:<NodePort>
+                    # (kube-proxy binds NodePorts in the host netns).  Without
+                    # this, some CNI/interface combinations silently fail when
+                    # traffic arrives on secondary interfaces (e.g. lima0).
+                    # hostPort declarations on the container are redundant with
+                    # hostNetwork but kept for documentation / port awareness.
+                    host_network=True,
                     containers=[
                         k8s.V1Container(
                             name="nginx",
@@ -213,3 +234,67 @@ def build_daemonset(
             ),
         ),
     )
+
+
+def ensure_backend(
+    svc_namespace: str,
+    svc_name: str,
+    ports: list[dict[str, Any]],
+    owner_uid: str,
+) -> str:
+    """Ensure the NGINX backend resources (ConfigMap and DaemonSet) exist and are up to date for the given service."""
+    cm = build_configmap(
+        svc_namespace, svc_name, build_nginx_stream_config(ports), owner_uid
+    )
+    ds = build_daemonset(svc_namespace, svc_name, ports, owner_uid)
+    cm_name, cm_namespace = (
+        getattr(cm.metadata, "name"),
+        getattr(cm.metadata, "namespace"),
+    )
+    ds_name, ds_namespace = (
+        getattr(ds.metadata, "name"),
+        getattr(ds.metadata, "namespace"),
+    )
+    apps_v1 = k8s.AppsV1Api()
+    core_v1 = k8s.CoreV1Api()
+
+    try:
+        core_v1.read_namespaced_config_map(cm_name, cm_namespace)
+    except ApiException as e:
+        if e.status == 409:  # Already exists
+            core_v1.replace_namespaced_config_map(cm_name, cm_namespace, cm)
+        elif e.status == 404:  # Not found
+            core_v1.create_namespaced_config_map(cm_namespace, cm)
+        else:
+            raise
+
+    try:
+        apps_v1.read_namespaced_daemon_set(ds_name, ds_namespace)
+    except ApiException as e:
+        if e.status == 409:  # Already exists
+            apps_v1.replace_namespaced_daemon_set(ds_name, ds_namespace, ds)
+        elif e.status == 404:  # Not found
+            apps_v1.create_namespaced_daemon_set(ds_namespace, ds)
+        else:
+            raise
+    return ds_name
+
+
+def cleanup_backend(svc_namespace: str, svc_name: str) -> None:
+    """Delete the NGINX backend resources (ConfigMap and DaemonSet) for the given service."""
+    cm_name = CONFIGMAP_PREFIX + safe_name(svc_namespace, svc_name)
+    ds_name = DAEMONSET_PREFIX + safe_name(svc_namespace, svc_name)
+    apps_v1 = k8s.AppsV1Api()
+    core_v1 = k8s.CoreV1Api()
+
+    try:
+        apps_v1.delete_namespaced_daemon_set(ds_name, NAMESPACE)
+    except ApiException as e:
+        if e.status != 404:  # Ignore not found
+            raise
+
+    try:
+        core_v1.delete_namespaced_config_map(cm_name, NAMESPACE)
+    except ApiException as e:
+        if e.status != 404:  # Ignore not found
+            raise

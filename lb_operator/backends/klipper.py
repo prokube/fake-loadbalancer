@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from kubernetes import client as k8s
+from kubernetes.client.rest import ApiException
 
 from ..constants import (
     DAEMONSET_PREFIX,
     KLIPPER_IMAGE,
     MANAGED_BY_LABEL,
-    OPERATOR_LABEL,
+    MANAGED_ANNOTATION,
 )
 from ..utils import NAMESPACE, safe_name
 
@@ -79,7 +80,7 @@ def build_daemonset(
             name=ds_name,
             namespace=NAMESPACE,
             labels={
-                OPERATOR_LABEL: "true",
+                MANAGED_ANNOTATION: "true",
                 MANAGED_BY_LABEL: "bare-service-lb",
                 "bare-service-lb.prokube.ai/service-namespace": svc_namespace,
                 "bare-service-lb.prokube.ai/service-name": svc_name,
@@ -99,7 +100,7 @@ def build_daemonset(
                 metadata=k8s.V1ObjectMeta(
                     labels={
                         "bare-service-lb.prokube.ai/daemonset": ds_name,
-                        OPERATOR_LABEL: "true",
+                        MANAGED_ANNOTATION: "true",
                     },
                 ),
                 spec=k8s.V1PodSpec(
@@ -121,3 +122,35 @@ def build_daemonset(
             ),
         ),
     )
+
+
+def ensure_backend(
+    svc_namespace: str,
+    svc_name: str,
+    ports: list[dict[str, Any]],
+    owner_uid: str,
+) -> str:
+    """Ensure the klipper-lb DaemonSet exists and is up to date."""
+    ds = build_daemonset(svc_namespace, svc_name, ports, owner_uid)
+    ds_name, ds_namespace = getattr(ds.metadata, "name"), getattr(ds.metadata, "namespace")
+    apps_v1 = k8s.AppsV1Api()
+    try:
+        apps_v1.read_namespaced_daemon_set(ds_name, ds_namespace)
+    except ApiException as e:
+        if e.status == 409: # Already exists
+            apps_v1.replace_namespaced_daemon_set(ds_name, ds_namespace, ds)
+        elif e.status == 404: # Not found
+            apps_v1.create_namespaced_daemon_set(ds_namespace, ds)
+        else:
+            raise
+    return ds_name
+
+def cleanup_backend(svc_namespace: str, svc_name: str) -> None:
+    """Delete the klipper-lb DaemonSet for the given service."""
+    ds_name = DAEMONSET_PREFIX + safe_name(svc_namespace, svc_name)
+    apps_v1 = k8s.AppsV1Api()
+    try:
+        apps_v1.delete_namespaced_daemon_set(ds_name, NAMESPACE)
+    except ApiException as e:
+        if e.status != 404: # Not found
+            raise
