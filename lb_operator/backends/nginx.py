@@ -242,7 +242,7 @@ def ensure_backend(
     ports: list[dict[str, Any]],
     owner_uid: str,
 ) -> str:
-    """Ensure the NGINX backend resources (ConfigMap and DaemonSet) exist and are up to date for the given service."""
+    """Ensure the NGINX backend resources exist and are up to date for the given service."""
     cm = build_configmap(
         svc_namespace, svc_name, build_nginx_stream_config(ports), owner_uid
     )

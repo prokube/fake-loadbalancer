@@ -195,9 +195,6 @@ async def handle_node_change(**_: Any) -> None:
     when=lambda namespace, **_: namespace == NAMESPACE,  # type: ignore
 )  # type: ignore
 async def handle_pod_event(
-    event: dict[
-        str, Any
-    ],  # pylint: disable=unused-argument # event is required for the handler signature but not used
     meta: dict[str, Any],
     **_: Any,
 ) -> None:
@@ -230,9 +227,9 @@ async def handle_pod_event(
         ready_ips = get_ready_node_ips(ds_label)
         patch_service_status(svc_ns, svc_name, ready_ips)
     except ApiException as e:
-        if (
-            e.status != 404
-        ):  # DaemonSet might have been deleted because the service was deleted, in which case we can ignore the error
+        # DaemonSet might have been deleted because the service was deleted,
+        # in which case we can ignore the error
+        if e.status != 404:
             logger.exception(
                 "Failed to update status for %s/%s from pod event",
                 svc_ns,
