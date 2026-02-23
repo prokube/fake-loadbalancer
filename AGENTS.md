@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**bare-service-lb** is a Kubernetes operator that provides `LoadBalancer`-type Service support on bare-metal clusters, cloud VMs, and anywhere without a native cloud load balancer. Inspired by k3s ServiceLB (klipper-lb), it deploys DaemonSets with `hostPort` to make services reachable on every node at the original port. Two proxy backends are supported: **nginx** (default, NGINX stream proxy with access logs) and **klipper** (klipper-lb image, iptables/nftables DNAT).
+**bare-service-lb** is a Kubernetes operator that provides `LoadBalancer`-type Service support on bare-metal clusters, cloud VMs, and anywhere without a native cloud load balancer. Inspired by k3s ServiceLB (klipper-lb), it deploys DaemonSets to make services reachable on every node at the original port. Two proxy backends are supported: **nginx** (default, NGINX stream proxy with `hostNetwork` and access logs) and **klipper** (klipper-lb image, `hostPort` with iptables/nftables DNAT).
 
 **Language:** Python 3.11+
 **Framework:** [Kopf](https://kopf.readthedocs.io/) (Kubernetes Operator Pythonic Framework)
@@ -16,7 +16,7 @@ User creates Service type=LoadBalancer (port 80)
 
   [nginx backend — default]
   → Operator creates ConfigMap with NGINX stream config
-  → Operator creates DaemonSet (NGINX with hostPort:80 → upstream 127.0.0.1:30764)
+  → Operator creates DaemonSet (NGINX with hostNetwork, listening on :80 → upstream 127.0.0.1:30764)
 
   [klipper backend]
   → Operator creates DaemonSet (klipper-lb with hostPort:80 → DNAT to NodePort 30764)

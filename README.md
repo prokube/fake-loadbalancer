@@ -151,7 +151,7 @@ bare-service-lb supports two proxy backends:
 
 | Backend | Image | How it works | Best for |
 |---------|-------|--------------|----------|
-| `nginx` (default) | `nginx:1.27-alpine` | NGINX stream proxy with `hostPort` | Observability (access logs) |
+| `nginx` (default) | `nginx:1.27-alpine` | NGINX stream proxy with `hostNetwork` | Observability (access logs) |
 | `klipper` | `rancher/klipper-lb` | iptables DNAT with `hostPort` | Performance (kernel-level NAT) |
 
 ### Global default
@@ -255,7 +255,7 @@ We believe in transparency. Here's how bare-service-lb compares to other solutio
 
 **bare-service-lb** (this project):
 ```
-User → Node:80 (hostPort) → NGINX proxy → 127.0.0.1:30764 (NodePort) → Service ClusterIP → Pods
+User → Node:80 (hostNetwork) → NGINX proxy → 127.0.0.1:30764 (NodePort) → Service ClusterIP → Pods
                                                     ↓
                                           kube-proxy does load balancing
 ```
