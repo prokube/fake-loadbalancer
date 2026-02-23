@@ -135,12 +135,10 @@ def ensure_backend(
     ds_name, ds_namespace = getattr(ds.metadata, "name"), getattr(ds.metadata, "namespace")
     apps_v1 = k8s.AppsV1Api()
     try:
-        apps_v1.read_namespaced_daemon_set(ds_name, ds_namespace)
+        apps_v1.create_namespaced_daemon_set(ds_namespace, ds)
     except ApiException as e:
         if e.status == 409: # Already exists
             apps_v1.replace_namespaced_daemon_set(ds_name, ds_namespace, ds)
-        elif e.status == 404: # Not found
-            apps_v1.create_namespaced_daemon_set(ds_namespace, ds)
         else:
             raise
     return ds_name

@@ -259,22 +259,17 @@ def ensure_backend(
     core_v1 = k8s.CoreV1Api()
 
     try:
-        core_v1.read_namespaced_config_map(cm_name, cm_namespace)
+        core_v1.create_namespaced_config_map(cm_namespace, cm)
     except ApiException as e:
         if e.status == 409:  # Already exists
             core_v1.replace_namespaced_config_map(cm_name, cm_namespace, cm)
-        elif e.status == 404:  # Not found
-            core_v1.create_namespaced_config_map(cm_namespace, cm)
         else:
             raise
-
     try:
-        apps_v1.read_namespaced_daemon_set(ds_name, ds_namespace)
+        apps_v1.create_namespaced_daemon_set(ds_namespace, ds)
     except ApiException as e:
         if e.status == 409:  # Already exists
             apps_v1.replace_namespaced_daemon_set(ds_name, ds_namespace, ds)
-        elif e.status == 404:  # Not found
-            apps_v1.create_namespaced_daemon_set(ds_namespace, ds)
         else:
             raise
     return ds_name
