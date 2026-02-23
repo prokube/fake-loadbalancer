@@ -1,14 +1,18 @@
 """Main entry point for the Load Balancer Operator."""
 
 import logging
-import kopf
 import os
-from . import handlers # pylint: disable=unused-import # needed to register handlers
+
+import kopf
+
+from . import handlers  # pylint: disable=unused-import # needed to register handlers
+
 
 def get_log_level() -> int:
     """Get the log level from the environment variable, defaulting to INFO."""
     level_str = os.getenv("BSL_LOG_LEVEL", "INFO").upper()
     return getattr(logging, level_str, logging.INFO)
+
 
 logging.basicConfig(
     level=get_log_level(),

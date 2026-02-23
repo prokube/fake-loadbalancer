@@ -76,9 +76,7 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     # exactly one becomes active; equal priorities cause all to freeze.
     settings.peering.standalone = False
     settings.peering.priority = random.randint(0, 32767)
-    settings.peering.name = os.environ.get(
-        "LEADER_ELECTION_LEASE_NAME", "bare-service-lb-leader"
-    )
+    settings.peering.name = os.environ.get("LEADER_ELECTION_LEASE_NAME", "bare-service-lb-leader")
     settings.peering.mandatory = True
 
 
@@ -197,7 +195,9 @@ async def handle_node_change(**_: Any) -> None:
     when=lambda namespace, **_: namespace == NAMESPACE,  # type: ignore
 )  # type: ignore
 async def handle_pod_event(
-    event: dict[str, Any],  # pylint: disable=unused-argument # event is required for the handler signature but not used
+    event: dict[
+        str, Any
+    ],  # pylint: disable=unused-argument # event is required for the handler signature but not used
     meta: dict[str, Any],
     **_: Any,
 ) -> None:
@@ -216,9 +216,7 @@ async def handle_pod_event(
     # Resolve the DaemonSet back to its owning Service via DaemonSet labels
     apps_v1 = k8s.AppsV1Api()
     try:
-        ds = cast(
-            k8s.V1DaemonSet, apps_v1.read_namespaced_daemon_set(ds_label, NAMESPACE)
-        )
+        ds = cast(k8s.V1DaemonSet, apps_v1.read_namespaced_daemon_set(ds_label, NAMESPACE))
     except ApiException:
         return  # DaemonSet may already be deleted
 
