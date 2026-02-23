@@ -5,21 +5,15 @@ from __future__ import annotations
 import logging
 import os
 import random
-import textwrap
 from typing import Any, cast
-from xxlimited import new
 
 import kopf
 from kubernetes import client as k8s
 from kubernetes.client.exceptions import ApiException
 
-from .backends import klipper as klipper_backend
 from .backends import nginx as nginx_backend
 from .constants import (
-    BACKEND_ANNOTATION,
-    BACKENDS,
     DAEMONSET_PREFIX,
-    DEFAULT_BACKEND,
     FINALIZER,
     MANAGED_ANNOTATION,
 )
@@ -32,16 +26,6 @@ from .utils import (
 
 logger = logging.getLogger("bare-service-lb")
 
-
-ENSURE_BACKEND = {
-    "nginx": nginx_backend.ensure_backend,
-    "klipper": klipper_backend.ensure_backend,
-}
-
-CLEANUP_BACKEND = {
-    "nginx": nginx_backend.cleanup_backend,
-    "klipper": klipper_backend.cleanup_backend,
-}
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -92,7 +76,9 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
     # exactly one becomes active; equal priorities cause all to freeze.
     settings.peering.standalone = False
     settings.peering.priority = random.randint(0, 32767)
-    settings.peering.name = os.environ.get("LEADER_ELECTION_LEASE_NAME", "bare-service-lb-leader")
+    settings.peering.name = os.environ.get(
+        "LEADER_ELECTION_LEASE_NAME", "bare-service-lb-leader"
+    )
     settings.peering.mandatory = True
 
 
@@ -105,19 +91,18 @@ def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
 async def handle_loadbalancer_create(
     namespace: str,
     name: str,
-    annotations: dict[str, str],
     uid: str,
     **_: Any,
 ):
     """Handle creation of a LoadBalancer service."""
     v1 = k8s.CoreV1Api()
     patch_body: dict[str, Any] = {
-            "metadata": {
-                "annotations": {
-                    MANAGED_ANNOTATION: "true",
-                },
+        "metadata": {
+            "annotations": {
+                MANAGED_ANNOTATION: "true",
             },
-        }
+        },
+    }
     v1.patch_namespaced_service(name, namespace, patch_body)
     logger.info("Marked %s/%s as managed", namespace, name)
 
@@ -128,24 +113,16 @@ async def handle_loadbalancer_create(
     etp: str = getattr(svc.spec, "external_traffic_policy", "Cluster")
 
     ports = _build_port_mapping(svc_ports, cluster_ip, use_cluster_ip=etp == "Local")
-    backend = annotations.get(BACKEND_ANNOTATION, DEFAULT_BACKEND).lower()
-    if backend not in BACKENDS:
-        logger.warning(
-            "Unrecognized backend '%s', defaulting to '%s'",
-            backend,
-            DEFAULT_BACKEND,
-        )
-        backend = DEFAULT_BACKEND
-    
-    ds_name = ENSURE_BACKEND[backend](namespace, name, ports, uid)
+
+    ds_name = nginx_backend.ensure_backend(namespace, name, ports, uid)
     ready_ips = get_ready_node_ips(ds_name)
-    ingress = [{"ip": ip} for ip in ready_ips]
-    patch_body: dict[str, Any] = {"status": {"loadBalancer": {"ingress": ingress}}}
-    patch_body["metadata"] = {"annotations": {"bare-service-lb.prokube.ai/backend-resources": ""}}
+    patch_service_status(namespace, name, ready_ips)
+
 
 @kopf.on.delete(
     "services",
-    field="spec.type", value="LoadBalancer",
+    field="spec.type",
+    value="LoadBalancer",
     annotations={"bare-service-lb.prokube.ai/managed": "true"},
 )  # type: ignore
 async def handle_delete(
@@ -161,8 +138,7 @@ async def handle_delete(
         return
 
     logger.info("Cleaning up resources for deleted service %s/%s", namespace, name)
-    backend = annotations.get(BACKEND_ANNOTATION, "").lower()
-    CLEANUP_BACKEND.get(backend, lambda *a, **k: None)(namespace, name)
+    nginx_backend.cleanup_backend(namespace, name)
 
 
 # ---------------------------------------------------------------------------
@@ -221,15 +197,15 @@ async def handle_node_change(**_: Any) -> None:
     when=lambda namespace, **_: namespace == NAMESPACE,  # type: ignore
 )  # type: ignore
 async def handle_pod_event(
-    event: dict[str, Any], # pylint: disable=unused-argument # event is required for the handler signature but not used
+    event: dict[str, Any],  # pylint: disable=unused-argument # event is required for the handler signature but not used
     meta: dict[str, Any],
     **_: Any,
 ) -> None:
     """When a managed DaemonSet pod changes, refresh the owning Service status.
 
     This is the key piece that makes the k3s-style status work: after
-    ``handle_loadbalancer`` creates the DaemonSet, pods take a moment to
-    schedule and become Ready.  This watcher picks up those transitions
+    ``handle_loadbalancer_create`` creates the DaemonSet, pods take a moment
+    to schedule and become Ready.  This watcher picks up those transitions
     and patches the Service status with accurate node IPs.
     """
     labels = meta.get("labels", {})
@@ -240,7 +216,9 @@ async def handle_pod_event(
     # Resolve the DaemonSet back to its owning Service via DaemonSet labels
     apps_v1 = k8s.AppsV1Api()
     try:
-        ds = cast(k8s.V1DaemonSet, apps_v1.read_namespaced_daemon_set(ds_label, NAMESPACE))
+        ds = cast(
+            k8s.V1DaemonSet, apps_v1.read_namespaced_daemon_set(ds_label, NAMESPACE)
+        )
     except ApiException:
         return  # DaemonSet may already be deleted
 
@@ -254,7 +232,9 @@ async def handle_pod_event(
         ready_ips = get_ready_node_ips(ds_label)
         patch_service_status(svc_ns, svc_name, ready_ips)
     except ApiException as e:
-        if e.status != 404: # DaemonSet might have been deleted because the service was deleted, in which case we can ignore the error
+        if (
+            e.status != 404
+        ):  # DaemonSet might have been deleted because the service was deleted, in which case we can ignore the error
             logger.exception(
                 "Failed to update status for %s/%s from pod event",
                 svc_ns,

@@ -11,7 +11,7 @@ Inspired by [k3s ServiceLB](https://github.com/k3s-io/klipper-lb), bare-service-
 - **Excellent Observability**: NGINX logs (default) show actual traffic patterns
 - **Smart Traffic Policy**: Handles `externalTrafficPolicy: Local` correctly to prevent endpoint loss
 - **Production Ready**: Sophisticated pod readiness tracking and status management
-- **Implementation Flexible**: Currently uses NGINX proxy, iptables/nftables backends planned
+- **Simple Architecture**: Stateless NGINX stream proxy — no iptables, no NET_ADMIN, no stale state
 
 ## When to Use What
 
@@ -39,8 +39,7 @@ User creates Service (type: LoadBalancer, port 80)
 Operator patches to type: NodePort (K8s assigns e.g. 30764)
         │
         ▼
-Operator deploys NGINX DaemonSet (hostPort: 80)
-  with stream config: listen 80 → proxy_pass 127.0.0.1:30764
+Operator deploys NGINX DaemonSet (hostNetwork, listen :80 → proxy_pass 127.0.0.1:30764)
         │
         ▼
 Operator patches Service .status.loadBalancer.ingress with node IPs
@@ -145,41 +144,6 @@ spec:
 
 The operator creates a single DaemonSet with both `hostPort: 80` and `hostPort: 443`.
 
-## Backend Selection
-
-bare-service-lb supports two proxy backends:
-
-| Backend | Image | How it works | Best for |
-|---------|-------|--------------|----------|
-| `nginx` (default) | `nginx:1.27-alpine` | NGINX stream proxy with `hostNetwork` | Observability (access logs) |
-| `klipper` | `rancher/klipper-lb` | iptables DNAT with `hostPort` | Performance (kernel-level NAT) |
-
-### Global default
-
-Set in Helm values:
-
-```yaml
-defaultBackend: klipper  # or "nginx" (default)
-```
-
-### Per-service override
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: my-app
-  annotations:
-    bare-service-lb.prokube.ai/backend: klipper
-spec:
-  type: LoadBalancer
-  ports:
-    - port: 80
-      targetPort: 8080
-```
-
-The per-service annotation takes precedence over the global default, so you can mix backends in the same cluster.
-
 ## UDP Support
 
 UDP ports are also handled:
@@ -203,7 +167,7 @@ When you delete the Service, the operator automatically deletes the associated D
 | Component | Namespace | Purpose |
 |-----------|-----------|---------|
 | Operator Deployment | `bare-service-lb` | Watches services, manages lifecycle |
-| Proxy DaemonSet (per service) | `bare-service-lb` | NGINX or klipper-lb with `hostPort` |
+| Proxy DaemonSet (per service) | `bare-service-lb` | NGINX with `hostNetwork`, stream proxy |
 | ConfigMap (per service, nginx only) | `bare-service-lb` | Holds NGINX `stream {}` config |
 | ClusterKopfPeering | cluster-wide | Coordinates leader election between operator replicas |
 
@@ -249,7 +213,7 @@ We believe in transparency. Here's how bare-service-lb compares to other solutio
 | **Resource Overhead** | 🟡 Moderate (NGINX pods) | 🟢 Low (iptables) | 🟢 Low (no proxies) | 🟡 Moderate |
 | **Cost** | 🟢 Free | 🟢 Free | 🟢 Free | 🟡 ~$5/mo per LB |
 | **Maturity** | 🆕 New project | ✅ Battle-tested | ✅ CNCF Sandbox | ✅ Commercial |
-| **Implementation** | NGINX proxy | iptables NAT | ARP/BGP routing | Cloud tunnel |
+| **Implementation** | NGINX stream proxy | iptables NAT | ARP/BGP routing | Cloud tunnel |
 
 ### Architectural Differences
 
@@ -286,7 +250,7 @@ User → Routed IP (BGP advertisement to routers) → kube-proxy → Service Clu
 ## Limitations
 
 - **Port Conflicts**: Two services cannot claim the same `hostPort` — the second DaemonSet's pods will fail to schedule and the Service will show no `EXTERNAL-IP` (the operator only reports IPs for nodes where pods are actually Ready)
-- **Performance**: Additional userspace hop through NGINX (vs kernel-level NAT in k3s ServiceLB or routing in MetalLB). This is the trade-off for better observability.
+- **Performance**: Additional userspace hop through NGINX (vs kernel-level NAT in MetalLB). This is the trade-off for simplicity and portability.
 - **Single Namespace**: The operator uses a single namespace (`bare-service-lb`) for all managed resources
 - **No Node Pools**: Unlike k3s ServiceLB, there's no built-in label-based node selection (use standard K8s node selectors/affinity instead)
 - **Maturity**: New project (2025), while alternatives have years of production use. We recommend testing thoroughly in non-production first.
@@ -325,14 +289,11 @@ This project stands on the shoulders of giants:
 ```
 .
 ├── lb_operator/              # Operator package
-│   ├── __init__.py           # Package entry point
 │   ├── constants.py          # Labels, annotations, image refs, defaults
-│   ├── utils.py            # Resource naming, node IP resolution, status patching
+│   ├── utils.py              # Resource naming, node IP resolution, status patching
 │   ├── handlers.py           # Kopf event handlers and watchers
 │   └── backends/
-│       ├── __init__.py       # Backend selection (get_backend)
-│       ├── nginx.py          # NGINX stream proxy backend
-│       └── klipper.py        # Klipper-lb iptables backend
+│       └── nginx.py          # NGINX stream proxy backend
 ├── pyproject.toml            # Python project config
 ├── Dockerfile                # Multi-stage build with uv
 ├── helm/
@@ -347,7 +308,6 @@ This project stands on the shoulders of giants:
 
 ## Roadmap
 
-- [x] iptables/nftables backend via klipper-lb for better performance (maintain NGINX as default for observability)
 - [x] Helm chart for easier installation
 - [ ] Node pool support (label-based node selection like k3s ServiceLB)
 - [ ] Tunnel Custom Resource for IPVS compatibility
@@ -362,4 +322,4 @@ Apache License 2.0
 
 Contributions welcome! This project follows a Kubernetes operator pattern using [Kopf](https://kopf.readthedocs.io/).
 
-**Note:** This is a new project (2025). While inspired by battle-tested solutions like k3s ServiceLB, we recommend thorough testing before production use.
+**Note:** This is a new project (2026). While inspired by battle-tested solutions like k3s ServiceLB, we recommend thorough testing before production use.
