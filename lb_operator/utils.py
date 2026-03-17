@@ -151,7 +151,7 @@ def get_ready_node_ips(ds_name: str) -> list[str]:
 def patch_service_status(namespace: str, name: str, ips: list[str]) -> None:
     """Set .status.loadBalancer.ingress on the Service with node IPs."""
     v1 = k8s.CoreV1Api()
-    ingress = [{"ip": ip} for ip in ips]
+    ingress = [{"ip": ip, "ipMode": "Proxy"} for ip in ips]
     body: dict[str, Any] = {"status": {"loadBalancer": {"ingress": ingress}}}
     v1.patch_namespaced_service_status(name, namespace, body)
     logger.info("Patched status on %s/%s with IPs: %s", namespace, name, ips)
