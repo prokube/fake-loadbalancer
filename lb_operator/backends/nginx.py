@@ -79,7 +79,13 @@ def build_nginx_stream_config(
                 """) + extra + "}\n")
 
     inner = textwrap.indent("".join(blocks), "    ")
-    return f"stream {{\n{inner}}}\n"
+    log_cfg = textwrap.indent(textwrap.dedent("""\
+        log_format stream_access '$remote_addr [$time_local] '
+                                 '$protocol $status $bytes_sent $bytes_received '
+                                 '$session_time "$upstream_addr"';
+        access_log /var/log/nginx/access.log stream_access;
+    """), "    ")
+    return f"stream {{\n{log_cfg}{inner}}}\n"
 
 
 def build_configmap(
