@@ -20,7 +20,7 @@ from ..utils import NAMESPACE, safe_name
 # Top-level nginx.conf that includes the stream block
 NGINX_CONF = textwrap.dedent("""\
     worker_processes auto;
-    error_log /var/log/nginx/error.log warn;
+    error_log /dev/stderr warn;
     pid /tmp/nginx.pid;
 
     events {
@@ -83,7 +83,7 @@ def build_nginx_stream_config(
         log_format stream_access '$remote_addr [$time_local] '
                                  '$protocol $status $bytes_sent $bytes_received '
                                  '$session_time "$upstream_addr"';
-        access_log /var/log/nginx/access.log stream_access;
+        access_log /dev/stdout stream_access;
     """), "    ")
     return f"stream {{\n{log_cfg}{inner}}}\n"
 
