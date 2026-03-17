@@ -37,12 +37,9 @@ def build_nginx_stream_config(
 ) -> str:
     """Build an NGINX stream config that proxies hostPort -> backend.
 
-    The upstream target is chosen based on the ``upstream`` key in each port
-    mapping (set by the handler):
-      - ``<ClusterIP>:<port>`` when the service has
-        ``externalTrafficPolicy: Local`` (NodePort only listens on nodes
-        with a local endpoint, so 127.0.0.1 would fail on other nodes).
-      - ``127.0.0.1:<NodePort>`` for the default ``Cluster`` policy.
+    The upstream target is ``<ClusterIP>:<port>`` (set by the handler).
+    ClusterIP is reachable from the DaemonSet pod because it runs with
+    ``hostNetwork: true``.
 
     When *proxy_protocol* is ``True``, TCP server blocks include
     ``proxy_protocol on;`` so NGINX prepends a PROXY protocol v1 header.
@@ -174,12 +171,9 @@ def build_daemonset(
                             effect="NoSchedule",
                         ),
                     ],
-                    # Use host network so NGINX can reach 127.0.0.1:<NodePort>
-                    # (kube-proxy binds NodePorts in the host netns).  Without
-                    # this, some CNI/interface combinations silently fail when
-                    # traffic arrives on secondary interfaces (e.g. lima0).
-                    # hostPort declarations on the container are redundant with
-                    # hostNetwork but kept for documentation / port awareness.
+                    # Use host network so NGINX can bind the original service
+                    # port directly on the node.  The upstream targets
+                    # ClusterIP, which is routable from the host netns.
                     host_network=True,
                     containers=[
                         k8s.V1Container(

@@ -12,9 +12,8 @@
 
 ```
 User creates Service type=LoadBalancer (port 80)
-  → K8s auto-assigns NodePort (e.g. 30764)
   → Operator creates ConfigMap with NGINX stream config
-  → Operator creates DaemonSet (NGINX with hostNetwork, listening on :80 → upstream 127.0.0.1:30764)
+  → Operator creates DaemonSet (NGINX with hostNetwork, listening on :80 → upstream <ClusterIP>:80)
   → Operator patches Service .status.loadBalancer.ingress with node IPs
   → On delete: tears down DaemonSet + ConfigMap
 ```
@@ -78,9 +77,8 @@ The operator uses Kopf decorators to register event handlers:
 | `bare-service-lb.prokube.ai/service-namespace` | On DaemonSet/ConfigMap, traces back to source Service |
 | `bare-service-lb.prokube.ai/service-name` | On DaemonSet/ConfigMap, traces back to source Service |
 
-### externalTrafficPolicy Handling
-- **`Cluster` (default):** NGINX upstream targets `127.0.0.1:<NodePort>` (works on every node).
-- **`Local`:** NGINX upstream targets `<ClusterIP>:<port>` instead, because NodePort only listens on nodes with a local endpoint. This logic is in `handle_loadbalancer_create()` in `handlers.py`.
+### Upstream Routing
+NGINX upstream always targets `<ClusterIP>:<port>`. ClusterIP is routable from the DaemonSet pod because it runs with `hostNetwork: true`. This is simpler and more portable than routing via NodePort (which depends on the iptables backend matching between kube-proxy and the kernel).
 
 ### Status Reporting (IP Selection)
 Service `.status.loadBalancer.ingress` only includes IPs of nodes where the DaemonSet pod is **Running and Ready** (`get_ready_node_ips()` in `utils.py`). This means:

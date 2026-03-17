@@ -36,20 +36,14 @@ logger = logging.getLogger("bare-service-lb")
 def _build_port_mapping(
     svc_ports: list[k8s.V1ServicePort],
     cluster_ip: str,
-    use_cluster_ip: bool,
 ) -> list[dict[str, Any]]:
     """Build the port mapping list from service ports."""
     ports: list[dict[str, Any]] = []
     for p in svc_ports:
-        if use_cluster_ip:
-            upstream = f"{cluster_ip}:{p.port}"
-        else:
-            upstream = f"127.0.0.1:{p.node_port}"
         ports.append(
             {
                 "host_port": p.port,
-                "node_port": p.node_port,
-                "upstream": upstream,
+                "upstream": f"{cluster_ip}:{p.port}",
                 "protocol": p.protocol or "TCP",
                 "name": p.name or f"port-{p.port}",
             }
@@ -105,15 +99,13 @@ async def handle_loadbalancer_create(
     v1.patch_namespaced_service(name, namespace, patch_body)
     logger.info("Marked %s/%s as managed", namespace, name)
 
-    # Read the service to get auto-assigned NodePorts
     svc = cast(k8s.V1Service, v1.read_namespaced_service(name, namespace))
     svc_ports: list[k8s.V1ServicePort] = getattr(svc.spec, "ports", [])
     cluster_ip: str = getattr(svc.spec, "cluster_ip", "")
-    etp: str = getattr(svc.spec, "external_traffic_policy", "Cluster")
     annotations = getattr(svc.metadata, "annotations", {}) or {}
     proxy_protocol = annotations.get(PROXY_PROTOCOL_ANNOTATION) == "true"
 
-    ports = _build_port_mapping(svc_ports, cluster_ip, use_cluster_ip=etp == "Local")
+    ports = _build_port_mapping(svc_ports, cluster_ip)
 
     ds_name = nginx_backend.ensure_backend(
         namespace, name, ports, uid, proxy_protocol=proxy_protocol
