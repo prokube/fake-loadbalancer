@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-loadbalancer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fake-loadbalancer
+  template:
+    metadata:
+      labels:
+        app: fake-loadbalancer
+    spec:
+      serviceAccountName: fake-loadbalancer
+      containers:
+      - name: controller
+        image: ghcr.io/nolar/kopf:1.44.5-python3.14-alpine
+        command:
+        - kopf
+        - run
+        - /app/controller.py
+        - --all-namespaces
+        volumeMounts:
+        - name: controller
+          mountPath: /app
+        resources:
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+      volumes:
+      - name: controller
+        configMap:
+          name: fake-loadbalancer-controller
